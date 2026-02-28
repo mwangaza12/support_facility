@@ -3,16 +3,14 @@ import { eq, and, gt } from 'drizzle-orm';
 import db from '../db/db';
 import { otpRequests } from '../db/schema';
 
-// Initialize Africa's Talking - exactly as per official docs
+// Initialize Africa's Talking with production credentials
 const credentials = {
     apiKey: process.env.AFRICASTALKING_API_KEY!,
-    username: process.env.AFRICASTALKING_USERNAME || 'sandbox',
+    username: process.env.AFRICASTALKING_USERNAME!, // Your production username
 };
 
 // Initialize the SDK
 const AfricasTalking = require('africastalking')(credentials);
-
-// Get the SMS service
 const sms = AfricasTalking.SMS;
 
 export class OtpService {
@@ -55,32 +53,31 @@ export class OtpService {
         console.log(`SMS to ${phoneNumber}: ${message}`);
         
         try {
-            // Format options exactly as per official docs
+            // IMPORTANT: No 'from' parameter - let AT assign default
             const options = {
-                // Set the numbers you want to send to in international format (WITH the +)
-                to: [phoneNumber],  // Keep the + as per docs
-                // Set your message
+                to: [phoneNumber],
                 message: message,
-                // Optional: Set your shortCode or senderId
-                from: process.env.AFRICASTALKING_SENDER_ID || '22388'
+                // No 'from' field - this is key!
             };
 
             console.log('Sending with options:', JSON.stringify(options, null, 2));
 
-            // That's it, hit send and we'll take care of the rest
             const response = await sms.send(options);
             
-            console.log('✅ SMS sent successfully:', response);
+            // Check response
+            if (response.SMSMessageData.Recipients?.length > 0) {
+                console.log('✅ SMS sent successfully to:', response.SMSMessageData.Recipients);
+            } else {
+                console.log('✅ SMS accepted:', response.SMSMessageData);
+            }
+            
             return response;
             
         } catch (error: any) {
             console.error('❌ SMS send failed:', {
                 message: error.message,
-                response: error.response?.data || error,
-                stack: error.stack
+                response: error.response?.data || error
             });
-            
-            // Don't throw - we don't want to fail the request if SMS fails
         }
     }
 
@@ -106,7 +103,6 @@ export class OtpService {
         const isValid = await bcrypt.compare(otp, request.otpHash);
 
         if (!isValid) {
-            // Increment attempts
             await db
                 .update(otpRequests)
                 .set({ attempts: attempts + 1 })
@@ -115,7 +111,6 @@ export class OtpService {
             return { success: false, error: 'Invalid OTP' };
         }
 
-        // Mark as verified
         await db
         .update(otpRequests)
         .set({
