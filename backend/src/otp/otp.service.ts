@@ -32,14 +32,16 @@ export class OtpService {
         })
         .returning();
 
-        // Send SMS
-        await this.sendSms(data.patientPhone, otp, data.targetFacility);
+        // Send SMS with the requesting user
+        await this.sendSms(data.patientPhone, otp, data.targetFacility, data.requestingUser);
 
         return { requestId: request.id, expiresAt: request.expiresAt };
     }
 
-    async sendSms(phoneNumber: string, otp: string, facility: string) {
-        const message = `${process.env.FACILITY_NAME} is requesting access to your records from ${facility}.\n\nYour OTP: ${otp}\n\nValid for 5 minutes.`;
+    // Fixed: Added requestingUser parameter
+    async sendSms(phoneNumber: string, otp: string, facility: string, requestingUser: string) {
+        // Fixed: Use requestingUser instead of FACILITY_NAME env var
+        const message = `${requestingUser} is requesting access to your records from ${facility}.\n\nYour OTP: ${otp}\n\nValid for 5 minutes.`;
 
         console.log(`SMS to ${phoneNumber}: ${message}`);
 
@@ -59,8 +61,10 @@ export class OtpService {
                 },
                 }
             );
+            console.log('SMS sent successfully');
         } catch (error) {
             console.error('SMS send failed:', error);
+            // Don't throw - we don't want to fail the request if SMS fails
         }
     }
 

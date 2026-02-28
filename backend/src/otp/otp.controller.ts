@@ -1,13 +1,11 @@
-// src/controllers/otpController.ts
 import { Request, Response } from 'express';
 import { otpService } from './otp.service';
 export class OtpController {
     async request(req: Request, res: Response) {
         try {
-            const { patientNupi, patientPhone, targetFacility } = req.body;
-            const user = (req as any).user;
+            const { patientNupi, patientPhone, targetFacility,requestingUser } = req.body;
 
-            if (!patientNupi || !patientPhone || !targetFacility) {
+            if (!patientNupi || !patientPhone || !targetFacility || !requestingUser) {
                 return res.status(400).json({
                 success: false,
                 error: 'Missing required fields',
@@ -17,7 +15,7 @@ export class OtpController {
             const result = await otpService.requestOtp({
                 patientNupi,
                 patientPhone,
-                requestingUser: user?.email || 'system',
+                requestingUser,
                 targetFacility,
             });
 
