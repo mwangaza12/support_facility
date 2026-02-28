@@ -1,5 +1,5 @@
 import admin from 'firebase-admin';
-import { NUPIFacilityRecord, NUPIPatient } from '../nupi-registry/nupi-registry-types';
+import { NUPIFacilityRecord, NUPIPatient } from '../patients/patient.types';
 
 // Load service account
 const serviceAccount = require('../../nupi-registry-key.json');

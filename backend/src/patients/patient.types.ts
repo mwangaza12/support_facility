@@ -33,3 +33,18 @@ export interface NUPIPatient {
     facility_name?: string;
     [key: string]: any;
 }
+
+export interface NUPIFacilityRecord {
+    id: string;
+    nupi: string;
+    facilityId: string;
+    facilityName: string;
+    firstVisit: string;
+    lastVisit: string;
+    encounterCount: number;
+    encounters?: Array<{
+        encounterId: string;
+        encounterDate: string;
+        facilityId: string;
+    }>;
+}
