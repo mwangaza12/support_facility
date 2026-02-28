@@ -1,4 +1,4 @@
 .env
 dist/
 node_modules/
-drizzle/nupi-registry-key.json
+nupi-registry-key.json
