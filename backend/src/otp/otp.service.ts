@@ -1,8 +1,19 @@
 import bcrypt from 'bcryptjs';
 import { eq, and, gt } from 'drizzle-orm';
-import axios from 'axios';
 import db from '../db/db';
 import { otpRequests } from '../db/schema';
+
+// Initialize Africa's Talking - exactly as per official docs
+const credentials = {
+    apiKey: process.env.AFRICASTALKING_API_KEY!,
+    username: process.env.AFRICASTALKING_USERNAME || 'sandbox',
+};
+
+// Initialize the SDK
+const AfricasTalking = require('africastalking')(credentials);
+
+// Get the SMS service
+const sms = AfricasTalking.SMS;
 
 export class OtpService {
 
@@ -38,32 +49,37 @@ export class OtpService {
         return { requestId: request.id, expiresAt: request.expiresAt };
     }
 
-    // Fixed: Added requestingUser parameter
     async sendSms(phoneNumber: string, otp: string, facility: string, requestingUser: string) {
-        // Fixed: Use requestingUser instead of FACILITY_NAME env var
         const message = `${requestingUser} is requesting access to your records from ${facility}.\n\nYour OTP: ${otp}\n\nValid for 5 minutes.`;
 
         console.log(`SMS to ${phoneNumber}: ${message}`);
-
-        // Africa's Talking SMS
+        
         try {
-            await axios.post(
-                'https://api.africastalking.com/version1/messaging',
-                new URLSearchParams({
-                    username: process.env.AFRICASTALKING_USERNAME!,
-                    to: phoneNumber,
-                    message,
-                }),
-                {
-                headers: {
-                    apiKey: process.env.AFRICASTALKING_API_KEY!,
-                    'Content-Type': 'application/x-www-form-urlencoded',
-                },
-                }
-            );
-            console.log('SMS sent successfully');
-        } catch (error) {
-            console.error('SMS send failed:', error);
+            // Format options exactly as per official docs
+            const options = {
+                // Set the numbers you want to send to in international format (WITH the +)
+                to: [phoneNumber],  // Keep the + as per docs
+                // Set your message
+                message: message,
+                // Optional: Set your shortCode or senderId
+                from: process.env.AFRICASTALKING_SENDER_ID || '22388'
+            };
+
+            console.log('Sending with options:', JSON.stringify(options, null, 2));
+
+            // That's it, hit send and we'll take care of the rest
+            const response = await sms.send(options);
+            
+            console.log('✅ SMS sent successfully:', response);
+            return response;
+            
+        } catch (error: any) {
+            console.error('❌ SMS send failed:', {
+                message: error.message,
+                response: error.response?.data || error,
+                stack: error.stack
+            });
+            
             // Don't throw - we don't want to fail the request if SMS fails
         }
     }
