@@ -1,120 +1,203 @@
 import { eq } from 'drizzle-orm';
+import axios from 'axios';
 import db from '../db/db';
-import { patients } from '../db/schema';
-import { nupiDb } from '../config/firebase-nupi';
-import { Patient, NUPIPatient, NewPatient } from './patient.types';
+import { patients, encounters } from '../db/schema';
 
 export class PatientService {
-    // Get patient by NUPI - checks local, then NUPI registry
-    async getByNupi(nupi: string): Promise<Patient | any | null> {
-        // Check local first
-        const localPatient = await db.query.patients.findFirst({
-            where: eq(patients.nupi, nupi),
-        });
+    private hieGatewayUrl = process.env.HIE_GATEWAY_URL || 'http://localhost:3001/api/hie';
+    private facilityId = process.env.FACILITY_ID || 'RENDER_HOSPITAL';
 
-        if (localPatient) return localPatient;
-
-        // Check NUPI registry
-        console.log(`Patient ${nupi} not found locally, querying NUPI Registry...`);
-        const nupiData = await nupiDb.getPatientByNUPI(nupi);
-        
-        if (!nupiData) return null;
-
-        // Transform NUPI data to expected format
-        return this.transformNUPIData(nupiData);
-    }
-
-    // Check-in patient (creates local record)
-    async checkInPatient(nupi: string): Promise<Patient | null> {
-        // Check if exists locally
+    async getByNupi(nupi: string, otpToken?: string) {
+        // Check local database first
         let patient = await db.query.patients.findFirst({
             where: eq(patients.nupi, nupi),
         });
 
-        if (patient) return patient;
-
-        // Get from NUPI and create local
-        const nupiData = await nupiDb.getPatientByNUPI(nupi);
-        if (!nupiData) return null;
-
-        const transformed = this.transformNUPIData(nupiData);
-    
-        // Use the SCHEMA PROPERTY NAMES (camelCase) not column names
-        const [newPatient] = await db.insert(patients).values({
-            nupi: transformed.nupi,
-            firstName: transformed.firstName || '', 
-            lastName: transformed.lastName || '',    
-            middleName: transformed.middleName,     
-            dateOfBirth: transformed.dateOfBirth || new Date(), 
-            gender: transformed.gender || '',        
-            nationalId: transformed.nationalId,
-            phoneNumber: transformed.phoneNumber,
-            email: transformed.email,
-            address: transformed.address,
-            isFederatedRecord: true,                  // Boolean, not text
-        }).returning();
-
-        return newPatient;
-    }
-
-    // Transform NUPI data to our format
-    private transformNUPIData(data: NUPIPatient) {
-        let firstName = '', lastName = '', middleName = '';
-        
-        if (data.full_name) {
-            const parts = data.full_name.split(' ');
-            firstName = parts[0] || '';
-            if (parts.length > 2) {
-                middleName = parts[1] || '';
-                lastName = parts.slice(2).join(' ') || '';
-            } else {
-                lastName = parts.slice(1).join(' ') || '';
+        // If not found locally, query HIE Gateway
+        if (!patient) {
+            const hieData = await this.queryHieGateway(nupi, otpToken);
+            if (hieData) {
+                // Create federated record
+                [patient] = await db
+                    .insert(patients)
+                    .values({
+                        nupi: hieData.nupi,
+                        firstName: hieData.demographics.firstName,
+                        lastName: hieData.demographics.lastName,
+                        middleName: hieData.demographics.middleName,
+                        dateOfBirth: new Date(hieData.demographics.dateOfBirth),
+                        gender: hieData.demographics.gender,
+                        nationalId: hieData.demographics.nationalId,
+                        phoneNumber: hieData.demographics.phoneNumber,
+                        email: hieData.demographics.email,
+                        address: hieData.demographics.address,
+                        isFederatedRecord: true,
+                    })
+                    .returning();
             }
         }
 
-        // Parse date of birth from Firebase timestamp
-        let dateOfBirth = null;
-        if (data.date_of_birth?._seconds) {
-            dateOfBirth = new Date(data.date_of_birth._seconds * 1000);
+        return patient;
+    }
+
+    // Query HIE Gateway for patient info
+    async queryHieGateway(nupi: string, otpToken?: string) {
+        try {
+            console.log(`🔐 Querying HIE Gateway for: ${nupi}`);
+            
+            const response = await axios.get(
+                `${this.hieGatewayUrl}/patients/${nupi}`,
+                {
+                headers: {
+                    'X-Facility-Id': this.facilityId,
+                    'X-User-Id': 'system', // In production, use actual user ID
+                    ...(otpToken && { 'X-OTP-Token': otpToken })
+                },
+                timeout: 5000,
+                }
+            );
+        
+            if (response.data.success) {
+                console.log(`✅ Patient found in HIE Gateway`);
+                return response.data.data;
+            }
+            
+            return null;
+        } catch (error: any) {
+            if (error.response?.status === 404) {
+                console.log(`ℹ️  Patient not found in HIE Gateway`);
+                return null;
+            }
+            console.error('HIE Gateway error:', error.message);
+            return null;
+        }
+    }
+
+    // ⭐ NEW: Get federated patient data (requires OTP token)
+    async getFederatedPatientData(nupi: string, otpToken: string) {
+        // Validate OTP token
+        if (!otpToken) {
+            throw new Error('OTP token required for federated data access');
         }
 
+        // Get patient info
+        const patient = await this.getByNupi(nupi, otpToken);
+        
+        if (!patient) {
+            throw new Error('Patient not found');
+        }
+
+        // Get local encounters (Render Hospital PostgreSQL)
+        const localEncounters = await db.query.encounters.findMany({
+            where: eq(encounters.patientNupi, nupi),
+        });
+
+        console.log(`📊 Render Hospital has ${localEncounters.length} encounters`);
+
+        // ⭐ Fetch encounters from ClinicConnect via HIE Gateway (with OTP)
+        const clinicConnectEncounters = await this.fetchViaHieGateway(nupi, otpToken);
+
+        console.log(`📊 ClinicConnect has ${clinicConnectEncounters.length} encounters`);
+
+        // Combine all encounters
+        const allEncounters = [
+        // Render Hospital encounters
+        ...localEncounters.map((e: any) => ({
+            id: e.id,
+            patientNupi: e.patientNupi,
+            encounterDate: e.encounterDate,
+            encounterType: e.encounterType,
+            chiefComplaint: e.chiefComplaint,
+            vitalSigns: e.vitalSigns,
+            diagnoses: e.diagnoses,
+            medications: e.medications,
+            notes: e.notes,
+            practitionerName: e.practitionerName,
+            facilityId: e.facilityId,
+            facilityName: process.env.FACILITY_NAME || 'Render Hospital',
+            source: 'Render Hospital',
+            systemType: 'postgres',
+            status: e.status,
+            createdAt: e.createdAt,
+        })),
+        // ClinicConnect encounters (via gateway)
+        ...clinicConnectEncounters
+        ]
+        // Sort by date (newest first)
+        .sort((a, b) => 
+        new Date(b.encounterDate).getTime() - new Date(a.encounterDate).getTime()
+        );
+
+        console.log(`📊 Total combined encounters: ${allEncounters.length}`);
+
         return {
-            nupi: data.nupi,
-            firstName: firstName || data.firstName || '',
-            lastName: lastName || data.lastName || '',
-            middleName: middleName || data.middleName || null,
-            gender: data.gender || '',
-            dateOfBirth: dateOfBirth,
-            nationalId: data.nationalId || data.national_id,
-            phoneNumber: data.phoneNumber || data.phone_number,
-            email: data.email,
-            address: data.address || null,
-            facilityId: data.facility_id,
-            facilityName: data.facility_name,
+            patient,
+            encounters: allEncounters,
+            facilities: [
+                {
+                    facilityId: 'CLINIC_CONNECT',
+                    facilityName: 'ClinicConnect Clinic',
+                    systemType: 'firebase',
+                    encounterCount: clinicConnectEncounters.length,
+                    hasData: clinicConnectEncounters.length > 0
+                },
+                {
+                    facilityId: this.facilityId,
+                    facilityName: process.env.FACILITY_NAME || 'Render Hospital',
+                    systemType: 'postgres',
+                    encounterCount: localEncounters.length,
+                    hasData: localEncounters.length > 0
+                }
+            ],
+            facilitiesCount: 2,
+            totalEncounters: allEncounters.length,
+            consentVerified: true
         };
     }
 
-    // Search NUPI registry
-    async searchNUPI(criteria: { lastName?: string; nationalId?: string }) {
-        return await nupiDb.searchPatients(criteria);
+    // ⭐ Fetch from ClinicConnect via HIE Gateway (OTP REQUIRED)
+    async fetchViaHieGateway(nupi: string, otpToken: string) {
+        try {
+            console.log(`🔐 Fetching from HIE Gateway with OTP verification`);
+            console.log(`🔗 Gateway URL: ${this.hieGatewayUrl}/patients/${nupi}/encounters`);
+
+            const response = await axios.get(
+                `${this.hieGatewayUrl}/patients/${nupi}/encounters`,
+                {
+                headers: {
+                    'X-OTP-Token': otpToken, // ⭐ OTP token is REQUIRED
+                    'X-Facility-Id': this.facilityId,
+                    'X-User-Id': 'system' // In production, use actual logged-in user
+                },
+                timeout: 10000,
+                }
+            );
+
+            if (response.data.success && response.data.consentVerified) {
+                console.log(`✅ Consent verified! Fetched ${response.data.count} encounters`);
+                return response.data.data;
+            }
+
+            console.log(`⚠️  No encounters or consent not verified`);
+            return [];
+        
+        } catch (error: any) {
+            if (error.response?.status === 401 || error.response?.status === 403) {
+                console.error(`❌ OTP consent verification failed`);
+                throw new Error('OTP consent verification failed. Please request new OTP.');
+            }
+        
+            if (error.response?.status === 404) {
+                console.log(`ℹ️  No encounters found for ${nupi}`);
+                return [];
+            }
+        
+            console.error(`❌ HIE Gateway error:`, error.message);
+            throw new Error('Failed to fetch from HIE Gateway');
+        }
     }
 
-    // Get facility history from NUPI
-    async getFacilityHistory(nupi: string) {
-        return await nupiDb.getPatientFacilities(nupi);
-    }
-
-    // Register visit in NUPI
-    async registerVisit(nupi: string, data: { facilityId: string; facilityName: string; encounterId: string }) {
-        return await nupiDb.registerFacilityVisit({
-            nupi,
-            ...data,
-            encounterDate: new Date().toISOString()
-        });
-    }
-
-    // Local CRUD operations
-    async create(data: NewPatient) {
+    async create(data: any) {
         const [patient] = await db.insert(patients).values(data).returning();
         return patient;
     }
