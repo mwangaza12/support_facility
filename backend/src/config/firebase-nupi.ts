@@ -1,14 +1,14 @@
 import admin from 'firebase-admin';
 import { NUPIFacilityRecord, NUPIPatient } from '../patients/patient.types';
 
-// Load service account
-const serviceAccount = require('../../nupi-registry-key.json');
-
 // Initialize Firebase Admin SDK for NUPI Registry 
 if (!admin.apps.length) {
     admin.initializeApp({
-        credential: admin.credential.cert(serviceAccount),
-        projectId: serviceAccount.project_id
+    credential: admin.credential.cert({
+        projectId: process.env.FIREBASE_PROJECT_ID,
+        clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
+        privateKey: process.env.FIREBASE_PRIVATE_KEY?.replace(/\\n/g, "\n"),
+    }),
     });
 }
 
