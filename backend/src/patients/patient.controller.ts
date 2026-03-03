@@ -1,13 +1,85 @@
 import { Request, Response } from 'express';
 import { patientService } from './patient.service';
-import { PatientResponse } from './patient.types';
 
 export class PatientController {
-  // GET /patients/nupi/:nupi
-    async getByNupi(req: Request, res: Response): Promise<Response<PatientResponse>> {
+    async checkIn(req: Request, res: Response) {
         try {
             const { nupi } = req.params;
-            const patient = await patientService.getByNupi(String(nupi));
+            // Add your check-in logic here
+            // For example:
+            const result = patientService.checkIn(nupi, req.body);
+            
+            return res.json({
+                success: true,
+                data: result,
+                message: 'Patient checked in successfully'
+            });
+        } catch (error: any) {
+            return res.status(500).json({
+                success: false,
+                error: error.message,
+            });
+        }
+    }
+
+    async searchNUPI(req: Request, res: Response) {
+        try {
+            const { query } = req.query;
+            const results = patientService.searchNUPI(String(query));
+            
+            return res.json({
+                success: true,
+                data: results,
+            });
+        } catch (error: any) {
+            return res.status(500).json({
+                success: false,
+                error: error.message,
+            });
+        }
+    }
+
+    async getFacilities(req: Request, res: Response) {
+        try {
+            const { nupi } = req.params;
+            const facilities = patientService.getPatientFacilities(String(nupi));
+            
+            return res.json({
+                success: true,
+                data: facilities,
+            });
+        } catch (error: any) {
+            return res.status(500).json({
+                success: false,
+                error: error.message,
+            });
+        }
+    }
+
+    async registerVisit(req: Request, res: Response) {
+        try {
+            const { nupi } = req.params;
+            const visit = patientService.registerVisit(String(nupi), req.body);
+            
+            return res.status(201).json({
+                success: true,
+                data: visit,
+                message: 'Visit registered successfully'
+            });
+        } catch (error: any) {
+            return res.status(500).json({
+                success: false,
+                error: error.message,
+            });
+        }
+    }
+
+    async getByNupi(req: Request, res: Response) {
+        try {
+            const { nupi } = req.params;
+            const otpToken = req.headers['x-otp-token'] as string;
+            
+            const patient = await patientService.getByNupi(String(nupi), otpToken);
 
             if (!patient) {
                 return res.status(404).json({
@@ -16,101 +88,96 @@ export class PatientController {
                 });
             }
 
-            return res.json({ success: true, data: patient });
+            return res.json({
+                success: true,
+                data: patient,
+            });
         } catch (error: any) {
-            return res.status(500).json({ success: false, error: error.message });
+        return res.status(500).json({
+            success: false,
+            error: error.message,
+        });
         }
     }
 
-    // POST /patients/nupi/:nupi/checkin
-    async checkIn(req: Request, res: Response): Promise<Response<PatientResponse>> {
+    async getFederatedData(req: Request, res: Response) {
         try {
             const { nupi } = req.params;
-            const patient = await patientService.checkInPatient(String(nupi));
+            const otpToken = req.headers['x-otp-token'] as string;
+            
+            console.log(`🌐 Federated request for: ${nupi}`);
+            console.log(`🔐 OTP Token: ${otpToken ? 'Present' : 'Missing'}`);
+            
+            if (!otpToken) {
+                return res.status(401).json({
+                    success: false,
+                    error: 'OTP token required for federated data access',
+                    requiresConsent: true,
+                    message: 'Please request OTP consent first'
+                });
+            }
+
+            const federatedData = await patientService.getFederatedPatientData(String(nupi), otpToken);
+
+            return res.json({
+                success: true,
+                data: federatedData,
+                message: `Found records from ${federatedData.facilitiesCount} facilities`,
+                securityNote: 'Data accessed with verified OTP consent'
+            });
+        
+        } catch (error: any) {
+            if (error.message.includes('OTP')) {
+                return res.status(403).json({
+                    success: false,
+                    error: error.message,
+                    requiresConsent: true
+                });
+            }
+            
+            return res.status(500).json({
+                success: false,
+                error: error.message,
+            });
+        }
+    }
+
+    async create(req: Request, res: Response) {
+        try {
+            const patient = await patientService.create(req.body);
+
+            return res.status(201).json({
+                success: true,
+                data: patient,
+            });
+        } catch (error: any) {
+            return res.status(400).json({
+                success: false,
+                error: error.message,
+            });
+        }
+    }
+
+    async getById(req: Request, res: Response) {
+        try {
+            const patient = await patientService.getById(String(req.params.id));
 
             if (!patient) {
                 return res.status(404).json({
                     success: false,
-                    error: 'Patient not found in NUPI Registry',
+                    error: 'Patient not found',
                 });
             }
 
-            return res.json({ 
-                success: true, 
+            return res.json({
+                success: true,
                 data: patient,
-                message: 'Patient checked in successfully'
             });
         } catch (error: any) {
-            return res.status(500).json({ success: false, error: error.message });
-        }
-    }
-
-    // GET /patients/search/nupi
-    async searchNUPI(req: Request, res: Response): Promise<Response<PatientResponse>> {
-        try {
-            const { lastName, nationalId } = req.query;
-            const patients = await patientService.searchNUPI({
-                lastName: lastName as string,
-                nationalId: nationalId as string
-            });
-
-            return res.json({ success: true, data: patients });
-        } catch (error: any) {
-            return res.status(500).json({ success: false, error: error.message });
-        }
-    }
-
-  // GET /patients/:nupi/facilities
-    async getFacilities(req: Request, res: Response): Promise<Response<PatientResponse>> {
-        try {
-            const { nupi } = req.params;
-            const facilities = await patientService.getFacilityHistory(String(nupi));
-            return res.json({ success: true, data: facilities });
-        } catch (error: any) {
-            return res.status(500).json({ success: false, error: error.message });
-        }
-    }
-
-    // POST /patients/:nupi/visit
-    async registerVisit(req: Request, res: Response): Promise<Response<PatientResponse>> {
-        try {
-            const { nupi } = req.params;
-            const { facilityId, facilityName, encounterId } = req.body;
-
-            if (!facilityId || !facilityName || !encounterId) {
-                return res.status(400).json({
+            return res.status(500).json({
                 success: false,
-                error: 'Missing required fields'
-                });
-            }
-
-            await patientService.registerVisit(String(nupi), { facilityId, facilityName, encounterId });
-            return res.json({ success: true, message: 'Visit registered' });
-        } catch (error: any) {
-            return res.status(500).json({ success: false, error: error.message });
-        }
-    }
-
-    // POST /patients
-    async create(req: Request, res: Response): Promise<Response<PatientResponse>> {
-        try {
-            const patient = await patientService.create(req.body);
-            return res.status(201).json({ success: true, data: patient });
-        } catch (error: any) {
-            return res.status(400).json({ success: false, error: error.message });
-        }
-    }
-
-    // GET /patients/:id
-    async getById(req: Request, res: Response): Promise<Response<PatientResponse>> {
-        try {
-            const patient = await patientService.getById(String(req.params.id));
-            if (!patient) {
-                return res.status(404).json({ success: false, error: 'Patient not found' });
-            }
-            return res.json({ success: true, data: patient });
-        } catch (error: any) {
-            return res.status(500).json({ success: false, error: error.message });
+                error: error.message,
+            });
         }
     }
 }
