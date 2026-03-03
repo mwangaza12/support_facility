@@ -4,6 +4,18 @@ import db from '../db/db';
 import { patients, encounters } from '../db/schema';
 
 export class PatientService {
+    checkIn(nupi: string | string[], body: any) {
+        throw new Error('Method not implemented.');
+    }
+    searchNUPI(arg0: string) {
+        throw new Error('Method not implemented.');
+    }
+    getPatientFacilities(arg0: string) {
+        throw new Error('Method not implemented.');
+    }
+    registerVisit(arg0: string, body: any) {
+        throw new Error('Method not implemented.');
+    }
     private hieGatewayUrl = process.env.HIE_GATEWAY_URL || 'http://localhost:3001/api/hie';
     private facilityId = process.env.FACILITY_ID || 'RENDER_HOSPITAL';
 

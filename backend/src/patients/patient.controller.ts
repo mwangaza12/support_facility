@@ -2,6 +2,78 @@ import { Request, Response } from 'express';
 import { patientService } from './patient.service';
 
 export class PatientController {
+    async checkIn(req: Request, res: Response) {
+        try {
+            const { nupi } = req.params;
+            // Add your check-in logic here
+            // For example:
+            const result = patientService.checkIn(nupi, req.body);
+            
+            return res.json({
+                success: true,
+                data: result,
+                message: 'Patient checked in successfully'
+            });
+        } catch (error: any) {
+            return res.status(500).json({
+                success: false,
+                error: error.message,
+            });
+        }
+    }
+
+    async searchNUPI(req: Request, res: Response) {
+        try {
+            const { query } = req.query;
+            const results = patientService.searchNUPI(String(query));
+            
+            return res.json({
+                success: true,
+                data: results,
+            });
+        } catch (error: any) {
+            return res.status(500).json({
+                success: false,
+                error: error.message,
+            });
+        }
+    }
+
+    async getFacilities(req: Request, res: Response) {
+        try {
+            const { nupi } = req.params;
+            const facilities = patientService.getPatientFacilities(String(nupi));
+            
+            return res.json({
+                success: true,
+                data: facilities,
+            });
+        } catch (error: any) {
+            return res.status(500).json({
+                success: false,
+                error: error.message,
+            });
+        }
+    }
+
+    async registerVisit(req: Request, res: Response) {
+        try {
+            const { nupi } = req.params;
+            const visit = patientService.registerVisit(String(nupi), req.body);
+            
+            return res.status(201).json({
+                success: true,
+                data: visit,
+                message: 'Visit registered successfully'
+            });
+        } catch (error: any) {
+            return res.status(500).json({
+                success: false,
+                error: error.message,
+            });
+        }
+    }
+
     async getByNupi(req: Request, res: Response) {
         try {
             const { nupi } = req.params;
@@ -28,7 +100,6 @@ export class PatientController {
         }
     }
 
-    // ⭐ Get federated data (REQUIRES OTP TOKEN)
     async getFederatedData(req: Request, res: Response) {
         try {
             const { nupi } = req.params;
@@ -37,7 +108,6 @@ export class PatientController {
             console.log(`🌐 Federated request for: ${nupi}`);
             console.log(`🔐 OTP Token: ${otpToken ? 'Present' : 'Missing'}`);
             
-            // OTP token is REQUIRED
             if (!otpToken) {
                 return res.status(401).json({
                     success: false,
