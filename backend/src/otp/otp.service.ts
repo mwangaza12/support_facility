@@ -1,23 +1,13 @@
-import bcrypt from 'bcryptjs';
-import { eq, and, gt } from 'drizzle-orm';
+import { eq, and, lt } from 'drizzle-orm';
 import db from '../db/db';
-import { otpRequests } from '../db/schema';
+import { otpRequests, auditLog } from '../db/schema';
+import axios from 'axios';
 
-// Initialize Africa's Talking with production credentials
-const credentials = {
-    apiKey: process.env.AFRICASTALKING_API_KEY!,
-    username: process.env.AFRICASTALKING_USERNAME!, // Your production username
-};
-
-// Initialize the SDK
-const AfricasTalking = require('africastalking')(credentials);
-const sms = AfricasTalking.SMS;
+// HIE Gateway configuration
+const HIE_GATEWAY_URL = process.env.HIE_GATEWAY_URL || 'https://hie-gateway.onrender.com';
+const FACILITY_ID = process.env.FACILITY_ID || 'facility-001';
 
 export class OtpService {
-
-    generateOtp(): string {
-        return Math.floor(100000 + Math.random() * 900000).toString();
-    }
 
     async requestOtp(data: {
         patientNupi: string;
@@ -25,107 +15,488 @@ export class OtpService {
         requestingUser: string;
         targetFacility: string;
     }) {
-        const otp = this.generateOtp();
-        const otpHash = await bcrypt.hash(otp, 10);
-
-        const [request] = await db
-        .insert(otpRequests)
-        .values({
-            patientNupi: data.patientNupi,
-            patientPhone: data.patientPhone,
-            requestingUser: data.requestingUser,
-            targetFacility: data.targetFacility,
-            otp,
-            otpHash,
-            expiresAt: new Date(Date.now() + 5 * 60 * 1000), // 5 minutes
-        })
-        .returning();
-
-        // Send SMS with the requesting user
-        await this.sendSms(data.patientPhone, otp, data.targetFacility, data.requestingUser);
-
-        return { requestId: request.id, expiresAt: request.expiresAt };
-    }
-
-    async sendSms(phoneNumber: string, otp: string, facility: string, requestingUser: string) {
-        const message = `${requestingUser} is requesting access to your records from ${facility}.\n\nYour OTP: ${otp}\n\nValid for 5 minutes.`;
-
-        console.log(`SMS to ${phoneNumber}: ${message}`);
-        
         try {
-            // IMPORTANT: No 'from' parameter - let AT assign default
-            const options = {
-                to: [phoneNumber],
-                message: message,
-                // No 'from' field - this is key!
+            // Forward OTP request to HIE Gateway
+            const response = await axios.post(`${HIE_GATEWAY_URL}/api/otp/request`, {
+                patientNupi: data.patientNupi,
+                patientPhone: data.patientPhone,
+                facilityId: FACILITY_ID,
+                requestingUser: data.requestingUser,
+                targetFacility: data.targetFacility
+            });
+
+            const { requestId, expiresAt } = response.data;
+
+            // Store in local database with placeholder values for required fields
+            const [localRequest] = await db
+                .insert(otpRequests)
+                .values({
+                    id: requestId,
+                    patientNupi: data.patientNupi,
+                    patientPhone: data.patientPhone,
+                    requestingUser: data.requestingUser,
+                    targetFacility: data.targetFacility,
+                    status: 'pending',
+                    expiresAt: new Date(expiresAt),
+                    otp: 'HIE_MANAGED', // Placeholder since HIE Gateway manages OTP
+                    otpHash: 'HIE_MANAGED', // Placeholder since HIE Gateway manages OTP
+                    attempts: 0,
+                    verifiedAt: null
+                })
+                .returning();
+
+            // Log to audit trail
+            await db.insert(auditLog).values({
+                patientNupi: data.patientNupi,
+                userId: data.requestingUser,
+                userName: data.requestingUser, // You might want to fetch actual name
+                action: 'otp_request',
+                resource: 'otp_consent',
+                consentMethod: 'otp',
+                ipAddress: null // Add IP if available from request
+            });
+
+            return { 
+                requestId: localRequest.id, 
+                expiresAt: localRequest.expiresAt 
             };
-
-            console.log('Sending with options:', JSON.stringify(options, null, 2));
-
-            const response = await sms.send(options);
-            
-            // Check response
-            if (response.SMSMessageData.Recipients?.length > 0) {
-                console.log('✅ SMS sent successfully to:', response.SMSMessageData.Recipients);
-            } else {
-                console.log('✅ SMS accepted:', response.SMSMessageData);
-            }
-            
-            return response;
             
         } catch (error: any) {
-            console.error('❌ SMS send failed:', {
+            console.error('HIE Gateway OTP request failed:', {
                 message: error.message,
                 response: error.response?.data || error
             });
+            throw new Error(`Failed to request OTP: ${error.response?.data?.error || error.message}`);
         }
     }
 
-    async verifyOtp(requestId: string, otp: string) {
-        const request = await db.query.otpRequests.findFirst({
-            where: and(
-                eq(otpRequests.id, requestId),
-                eq(otpRequests.status, 'pending'),
-                gt(otpRequests.expiresAt, new Date())
-            ),
-        });
+    async verifyOtp(requestId: string, otp: string, requestingUser?: string) {
+        try {
+            // Check if request exists in local database
+            const existingRequest = await db.query.otpRequests.findFirst({
+                where: eq(otpRequests.id, requestId)
+            });
 
-        if (!request) {
-            return { success: false, error: 'Invalid or expired OTP request' };
-        }
+            if (!existingRequest) {
+                return { success: false, error: 'OTP request not found' };
+            }
 
-        const attempts = request.attempts ?? 0;
+            // Check if expired - compare dates properly
+            const now = new Date();
+            const expiresAt = new Date(existingRequest.expiresAt);
+            
+            if (now > expiresAt) {
+                await db
+                    .update(otpRequests)
+                    .set({ status: 'expired' })
+                    .where(eq(otpRequests.id, requestId));
+                
+                return { success: false, error: 'OTP has expired' };
+            }
 
-        if (attempts >= 3) {
-            return { success: false, error: 'Too many failed attempts' };
-        }
+            // Check if already verified
+            if (existingRequest.status === 'verified') {
+                return { 
+                    success: false, 
+                    error: 'OTP has already been verified',
+                    data: {
+                        patientNupi: existingRequest.patientNupi,
+                        targetFacility: existingRequest.targetFacility
+                    }
+                };
+            }
 
-        const isValid = await bcrypt.compare(otp, request.otpHash);
+            // Check attempt count
+            const attempts = existingRequest.attempts ?? 0;
+            if (attempts >= 3) {
+                await db
+                    .update(otpRequests)
+                    .set({ status: 'expired' })
+                    .where(eq(otpRequests.id, requestId));
+                
+                return { success: false, error: 'Too many failed attempts. Request expired.' };
+            }
 
-        if (!isValid) {
+            // Forward verification to HIE Gateway
+            const response = await axios.post(`${HIE_GATEWAY_URL}/api/otp/verify`, {
+                requestId,
+                otp,
+                facilityId: FACILITY_ID
+            });
+
+            const { success, data, error } = response.data;
+
+            if (!success) {
+                // Track failed attempt locally
+                await db
+                    .update(otpRequests)
+                    .set({ attempts: attempts + 1 })
+                    .where(eq(otpRequests.id, requestId));
+
+                return { 
+                    success: false, 
+                    error: error || 'Invalid OTP',
+                    attemptsRemaining: 2 - attempts
+                };
+            }
+
+            // Update local database on successful verification
             await db
                 .update(otpRequests)
-                .set({ attempts: attempts + 1 })
+                .set({
+                    status: 'verified',
+                    verifiedAt: new Date(),
+                })
                 .where(eq(otpRequests.id, requestId));
 
-            return { success: false, error: 'Invalid OTP' };
+            // Log successful verification to audit trail
+            await db.insert(auditLog).values({
+                patientNupi: existingRequest.patientNupi,
+                userId: requestingUser || existingRequest.requestingUser,
+                userName: requestingUser || existingRequest.requestingUser,
+                action: 'otp_verify',
+                resource: 'otp_consent',
+                resourceId: requestId,
+                consentMethod: 'otp'
+            });
+
+            return {
+                success: true,
+                data: {
+                    patientNupi: data.patientNupi || existingRequest.patientNupi,
+                    targetFacility: data.targetFacility || existingRequest.targetFacility,
+                    ...data
+                },
+                message: 'OTP verified successfully'
+            };
+            
+        } catch (error: any) {
+            console.error('HIE Gateway OTP verification failed:', {
+                message: error.message,
+                response: error.response?.data || error
+            });
+            
+            // Handle specific error cases
+            if (error.response?.status === 400) {
+                // Try to update attempt count
+                try {
+                    const existingRequest = await db.query.otpRequests.findFirst({
+                        where: eq(otpRequests.id, requestId)
+                    });
+                    
+                    if (existingRequest) {
+                        const attempts = (existingRequest.attempts ?? 0) + 1;
+                        await db
+                            .update(otpRequests)
+                            .set({ attempts })
+                            .where(eq(otpRequests.id, requestId));
+                    }
+                } catch (updateError) {
+                    console.error('Failed to update attempt count:', updateError);
+                }
+                
+                return { 
+                    success: false, 
+                    error: error.response.data.error || 'Invalid OTP' 
+                };
+            }
+            
+            return { 
+                success: false, 
+                error: 'Failed to verify OTP with HIE Gateway. Please try again.' 
+            };
         }
+    }
 
-        await db
-        .update(otpRequests)
-        .set({
-            status: 'verified',
-            verifiedAt: new Date(),
-        })
-        .where(eq(otpRequests.id, requestId));
+    async getOtpStatus(requestId: string) {
+        try {
+            // Get local request info
+            const localRequest = await db.query.otpRequests.findFirst({
+                where: eq(otpRequests.id, requestId)
+            });
 
-        return {
-            success: true,
-            data: {
-                patientNupi: request.patientNupi,
-                targetFacility: request.targetFacility,
-            },
-        };
+            if (!localRequest) {
+                return {
+                    success: false,
+                    error: 'OTP request not found'
+                };
+            }
+
+            // Check if expired
+            const now = new Date();
+            const expiresAt = new Date(localRequest.expiresAt);
+            const isExpired = now > expiresAt;
+
+            // Try to get status from HIE Gateway
+            try {
+                const response = await axios.get(`${HIE_GATEWAY_URL}/api/otp/status/${requestId}`, {
+                    params: { facilityId: FACILITY_ID }
+                });
+                
+                return {
+                    success: true,
+                    data: {
+                        ...response.data,
+                        localStatus: isExpired ? 'expired' : localRequest.status,
+                        attempts: localRequest.attempts,
+                        expiresAt: localRequest.expiresAt,
+                        verifiedAt: localRequest.verifiedAt,
+                        patientNupi: localRequest.patientNupi,
+                        targetFacility: localRequest.targetFacility
+                    }
+                };
+            } catch (hieError) {
+                // Fallback to local status only
+                return {
+                    success: true,
+                    data: {
+                        status: isExpired ? 'expired' : localRequest.status,
+                        attempts: localRequest.attempts,
+                        expiresAt: localRequest.expiresAt,
+                        verifiedAt: localRequest.verifiedAt,
+                        patientNupi: localRequest.patientNupi,
+                        targetFacility: localRequest.targetFacility,
+                        isExpired
+                    },
+                    message: 'Local status only (HIE Gateway unavailable)'
+                };
+            }
+        } catch (error: any) {
+            console.error('Failed to get OTP status:', error.message);
+            return {
+                success: false,
+                error: 'Failed to retrieve OTP status'
+            };
+        }
+    }
+
+    async resendOtp(requestId: string, requestingUser?: string) {
+        try {
+            // Check if request exists and is still pending
+            const existingRequest = await db.query.otpRequests.findFirst({
+                where: and(
+                    eq(otpRequests.id, requestId),
+                    eq(otpRequests.status, 'pending')
+                )
+            });
+
+            if (!existingRequest) {
+                return {
+                    success: false,
+                    error: 'Active OTP request not found'
+                };
+            }
+
+            // Check if expired
+            const now = new Date();
+            const expiresAt = new Date(existingRequest.expiresAt);
+            
+            if (now > expiresAt) {
+                await db
+                    .update(otpRequests)
+                    .set({ status: 'expired' })
+                    .where(eq(otpRequests.id, requestId));
+                
+                return { success: false, error: 'OTP request has expired' };
+            }
+
+            // Request new OTP from HIE Gateway
+            const response = await axios.post(`${HIE_GATEWAY_URL}/api/otp/resend`, {
+                requestId,
+                facilityId: FACILITY_ID
+            });
+
+            const { expiresAt: newExpiresAt } = response.data;
+
+            // Update local record with new expiry and reset attempts
+            await db
+                .update(otpRequests)
+                .set({
+                    expiresAt: new Date(newExpiresAt),
+                    attempts: 0, // Reset attempts for new OTP
+                    status: 'pending'
+                })
+                .where(eq(otpRequests.id, requestId));
+
+            // Log resend to audit trail
+            await db.insert(auditLog).values({
+                patientNupi: existingRequest.patientNupi,
+                userId: requestingUser || existingRequest.requestingUser,
+                userName: requestingUser || existingRequest.requestingUser,
+                action: 'otp_resend',
+                resource: 'otp_consent',
+                resourceId: requestId,
+                consentMethod: 'otp'
+            });
+
+            return {
+                success: true,
+                data: {
+                    requestId,
+                    expiresAt: newExpiresAt
+                },
+                message: 'OTP resent successfully'
+            };
+
+        } catch (error: any) {
+            console.error('Failed to resend OTP:', error.message);
+            return {
+                success: false,
+                error: error.response?.data?.error || 'Failed to resend OTP'
+            };
+        }
+    }
+
+    async cancelOtpRequest(requestId: string, requestingUser?: string) {
+        try {
+            // Get existing request
+            const existingRequest = await db.query.otpRequests.findFirst({
+                where: eq(otpRequests.id, requestId)
+            });
+
+            if (!existingRequest) {
+                return {
+                    success: false,
+                    error: 'OTP request not found'
+                };
+            }
+
+            // Update local status
+            await db
+                .update(otpRequests)
+                .set({
+                    status: 'expired'
+                })
+                .where(eq(otpRequests.id, requestId));
+
+            // Log cancellation to audit trail
+            await db.insert(auditLog).values({
+                patientNupi: existingRequest.patientNupi,
+                userId: requestingUser || existingRequest.requestingUser,
+                userName: requestingUser || existingRequest.requestingUser,
+                action: 'otp_cancel',
+                resource: 'otp_consent',
+                resourceId: requestId,
+                consentMethod: 'otp'
+            });
+
+            // Notify HIE Gateway (optional - fire and forget)
+            try {
+                await axios.post(`${HIE_GATEWAY_URL}/api/otp/cancel`, {
+                    requestId,
+                    facilityId: FACILITY_ID
+                });
+            } catch (hieError) {
+                console.warn('Failed to notify HIE Gateway of cancellation:', hieError);
+            }
+
+            return {
+                success: true,
+                message: 'OTP request cancelled successfully'
+            };
+
+        } catch (error: any) {
+            console.error('Failed to cancel OTP request:', error.message);
+            return {
+                success: false,
+                error: 'Failed to cancel OTP request'
+            };
+        }
+    }
+
+    async cleanupExpiredRequests() {
+        try {
+            // Find and update expired requests
+            const result = await db
+                .update(otpRequests)
+                .set({ status: 'expired' })
+                .where(
+                    and(
+                        eq(otpRequests.status, 'pending'),
+                        lt(otpRequests.expiresAt, new Date())
+                    )
+                )
+                .returning({ 
+                    id: otpRequests.id, 
+                    patientNupi: otpRequests.patientNupi,
+                    requestingUser: otpRequests.requestingUser 
+                });
+
+            // Log expired requests to audit trail
+            for (const request of result) {
+                await db.insert(auditLog).values({
+                    patientNupi: request.patientNupi,
+                    userId: request.requestingUser,
+                    userName: request.requestingUser,
+                    action: 'otp_expire',
+                    resource: 'otp_consent',
+                    resourceId: request.id,
+                    consentMethod: 'otp'
+                });
+            }
+
+            return {
+                success: true,
+                data: {
+                    expiredCount: result.length,
+                    expiredIds: result.map(r => r.id)
+                }
+            };
+        } catch (error: any) {
+            console.error('Failed to cleanup expired requests:', error.message);
+            return {
+                success: false,
+                error: 'Failed to cleanup expired requests'
+            };
+        }
+    }
+
+    async getPatientConsentHistory(patientNupi: string, limit: number = 50) {
+        try {
+            const history = await db.query.otpRequests.findMany({
+                where: eq(otpRequests.patientNupi, patientNupi),
+                orderBy: (requests, { desc }) => [desc(requests.createdAt)],
+                limit
+            });
+
+            return {
+                success: true,
+                data: history
+            };
+        } catch (error: any) {
+            console.error('Failed to get patient consent history:', error.message);
+            return {
+                success: false,
+                error: 'Failed to retrieve consent history'
+            };
+        }
+    }
+
+    async getFacilityConsentRequests(facilityId: string, status?: string, limit: number = 50) {
+        try {
+            const conditions = [eq(otpRequests.targetFacility, facilityId)];
+            
+            if (status) {
+                conditions.push(eq(otpRequests.status, status));
+            }
+
+            const requests = await db.query.otpRequests.findMany({
+                where: and(...conditions),
+                orderBy: (requests, { desc }) => [desc(requests.createdAt)],
+                limit
+            });
+
+            return {
+                success: true,
+                data: requests
+            };
+        } catch (error: any) {
+            console.error('Failed to get facility consent requests:', error.message);
+            return {
+                success: false,
+                error: 'Failed to retrieve consent requests'
+            };
+        }
     }
 }
 
