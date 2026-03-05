@@ -1,224 +1,484 @@
-import { eq } from 'drizzle-orm';
-import axios from 'axios';
+/**
+ * PatientService
+ * ══════════════
+ * Handles all patient operations for this facility.
+ *
+ * Every write that touches the blockchain goes through the HIE Gateway.
+ * Local Neon (PostgreSQL) is the source of truth for this facility's
+ * clinical data. The gateway is the source of truth for cross-facility
+ * data and the blockchain.
+ *
+ * Gateway headers required on every call:
+ *   X-Facility-Id: <FACILITY_ID from .env>
+ *   X-Api-Key:     <API_KEY from .env>   ← issued once by MoH on registration
+ *
+ * Patient access token (from /api/verify/answer) goes in:
+ *   Authorization: Bearer <token>
+ */
+
+import { eq, or, ilike } from 'drizzle-orm';
+import axios, { AxiosInstance } from 'axios';
 import db from '../db/db';
 import { patients, encounters } from '../db/schema';
 
+// ── Gateway client ────────────────────────────────────────────────
+// Single axios instance with facility credentials pre-attached.
+// Every request this facility makes to the gateway uses these headers
+// so the gateway can verify it's a legitimate registered facility.
+
+function createGatewayClient(): AxiosInstance {
+  const client = axios.create({
+    baseURL: process.env.HIE_GATEWAY_URL || 'http://localhost:5000',
+    timeout: 10000,
+    headers: {
+      'X-Facility-Id': process.env.FACILITY_ID   || '',
+      'X-Api-Key':     process.env.FACILITY_API_KEY || '',
+      'Content-Type':  'application/json',
+    },
+  });
+
+  // Log every gateway call in development
+  if (process.env.NODE_ENV === 'development') {
+    client.interceptors.request.use(req => {
+      console.log(`→ Gateway: ${req.method?.toUpperCase()} ${req.url}`);
+      return req;
+    });
+  }
+
+  return client;
+}
+
+const gateway = createGatewayClient();
+
+// ─────────────────────────────────────────────────────────────────
+
 export class PatientService {
-    checkIn(nupi: string | string[], body: any) {
-        throw new Error('Method not implemented.');
-    }
-    searchNUPI(arg0: string) {
-        throw new Error('Method not implemented.');
-    }
-    getPatientFacilities(arg0: string) {
-        throw new Error('Method not implemented.');
-    }
-    registerVisit(arg0: string, body: any) {
-        throw new Error('Method not implemented.');
-    }
-    private hieGatewayUrl = process.env.HIE_GATEWAY_URL || 'http://localhost:3001/api/hie';
-    private facilityId = process.env.FACILITY_ID || 'RENDER_HOSPITAL';
 
-    async getByNupi(nupi: string, otpToken?: string) {
-        // Check local database first
-        let patient = await db.query.patients.findFirst({
-            where: eq(patients.nupi, nupi),
-        });
+  // ══════════════════════════════════════════════════════════════
+  //  PATIENT REGISTRATION
+  //  Saves to local Neon DB + registers on blockchain via gateway
+  // ══════════════════════════════════════════════════════════════
 
-        // If not found locally, query HIE Gateway
-        if (!patient) {
-            const hieData = await this.queryHieGateway(nupi, otpToken);
-            if (hieData) {
-                // Create federated record
-                [patient] = await db
-                    .insert(patients)
-                    .values({
-                        nupi: hieData.nupi,
-                        firstName: hieData.demographics.firstName,
-                        lastName: hieData.demographics.lastName,
-                        middleName: hieData.demographics.middleName,
-                        dateOfBirth: new Date(hieData.demographics.dateOfBirth),
-                        gender: hieData.demographics.gender,
-                        nationalId: hieData.demographics.nationalId,
-                        phoneNumber: hieData.demographics.phoneNumber,
-                        email: hieData.demographics.email,
-                        address: hieData.demographics.address,
-                        isFederatedRecord: true,
-                    })
-                    .returning();
-            }
-        }
+  async create(data: {
+    nationalId:       string;
+    firstName:        string;
+    lastName:         string;
+    middleName?:      string;
+    dateOfBirth:      string;   // YYYY-MM-DD
+    gender:           string;
+    phoneNumber?:     string;
+    email?:           string;
+    address?:         object;
+    securityQuestion: string;
+    securityAnswer:   string;
+    pin:              string;   // exactly 4 digits
+  }) {
+    // ── Step 1: Derive NUPI from gateway (deterministic hash) ──
+    const nupiRes = await gateway.post('/api/patients/nupi', {
+      nationalId: data.nationalId,
+      dob:        data.dateOfBirth,
+    });
+    const nupi: string = nupiRes.data.nupi;
 
-        return patient;
+    // ── Step 2: Check if patient already exists locally ────────
+    const existing = await db.query.patients.findFirst({
+      where: eq(patients.nupi, nupi),
+    });
+    if (existing) {
+      return { patient: existing, alreadyExists: true, nupi };
     }
 
-    // Query HIE Gateway for patient info
-    async queryHieGateway(nupi: string, otpToken?: string) {
-        try {
-            console.log(`🔐 Querying HIE Gateway for: ${nupi}`);
-            
-            const response = await axios.get(
-                `${this.hieGatewayUrl}/patients/${nupi}`,
-                {
-                headers: {
-                    'X-Facility-Id': this.facilityId,
-                    'X-User-Id': 'system', // In production, use actual user ID
-                    ...(otpToken && { 'X-OTP-Token': otpToken })
-                },
-                timeout: 5000,
-                }
-            );
-        
-            if (response.data.success) {
-                console.log(`✅ Patient found in HIE Gateway`);
-                return response.data.data;
-            }
-            
-            return null;
-        } catch (error: any) {
-            if (error.response?.status === 404) {
-                console.log(`ℹ️  Patient not found in HIE Gateway`);
-                return null;
-            }
-            console.error('HIE Gateway error:', error.message);
-            return null;
-        }
+    // ── Step 3: Register on blockchain via gateway ─────────────
+    // This mints a PATIENT_REGISTERED block and auto-grants
+    // network consent so all facilities can see this patient.
+    const chainRes = await gateway.post('/api/patients/register', {
+      nationalId:       data.nationalId,
+      dob:              data.dateOfBirth,
+      name:             `${data.firstName} ${data.lastName}`,
+      securityQuestion: data.securityQuestion,
+      securityAnswer:   data.securityAnswer,
+      pin:              data.pin,
+    });
+
+    const { blockIndex } = chainRes.data;
+
+    // ── Step 4: Save to local Neon DB ──────────────────────────
+    // We do NOT store the security answer or PIN locally —
+    // those live only on the gateway/blockchain (hashed).
+    const [patient] = await db.insert(patients).values({
+      nupi,
+      nationalId:  data.nationalId,
+      firstName:   data.firstName,
+      lastName:    data.lastName,
+      middleName:  data.middleName  ?? null,
+      dateOfBirth: new Date(data.dateOfBirth),
+      gender:      data.gender,
+      phoneNumber: data.phoneNumber ?? null,
+      email:       data.email       ?? null,
+      address:     data.address     ?? null,
+    }).returning();
+
+    console.log(`✅ Patient registered: ${nupi} | Block #${blockIndex}`);
+    return { patient, alreadyExists: false, nupi, blockIndex };
+  }
+
+  // ══════════════════════════════════════════════════════════════
+  //  GET PATIENT BY LOCAL DB ID
+  // ══════════════════════════════════════════════════════════════
+
+  async getById(id: string) {
+    return db.query.patients.findFirst({
+      where: eq(patients.id, id),
+    });
+  }
+
+  // ══════════════════════════════════════════════════════════════
+  //  GET PATIENT BY NUPI
+  //  Checks local DB first, then gateway if not found locally.
+  //  accessToken — the bearer token from /api/verify/answer
+  // ══════════════════════════════════════════════════════════════
+
+  async getByNupi(nupi: string, accessToken?: string) {
+    // ── Local first ────────────────────────────────────────────
+    const local = await db.query.patients.findFirst({
+      where: eq(patients.nupi, nupi),
+    });
+    if (local) return { patient: local, source: 'local' };
+
+    // ── Not local — query gateway ──────────────────────────────
+    if (!accessToken) {
+      return null; // can't query gateway without a verified token
     }
 
-    // ⭐ NEW: Get federated patient data (requires OTP token)
-    async getFederatedPatientData(nupi: string, otpToken: string) {
-        // Validate OTP token
-        if (!otpToken) {
-            throw new Error('OTP token required for federated data access');
-        }
+    try {
+      const res = await gateway.get(`/api/fhir/Patient/${nupi}`, {
+        headers: { Authorization: `Bearer ${accessToken}` },
+      });
 
-        // Get patient info
-        const patient = await this.getByNupi(nupi, otpToken);
-        
-        if (!patient) {
-            throw new Error('Patient not found');
-        }
+      const fhir = res.data;
+      if (!fhir || fhir.resourceType !== 'Patient') return null;
 
-        // Get local encounters (Render Hospital PostgreSQL)
-        const localEncounters = await db.query.encounters.findMany({
-            where: eq(encounters.patientNupi, nupi),
-        });
+      // Cache the federated record locally so future lookups are fast
+      const name   = fhir.name?.[0];
+      const telecom = fhir.telecom || [];
+      const addr   = fhir.address?.[0];
 
-        console.log(`📊 Render Hospital has ${localEncounters.length} encounters`);
+      const [patient] = await db.insert(patients).values({
+        nupi,
+        firstName:         name?.given?.[0]  || 'Unknown',
+        lastName:          name?.family       || 'Unknown',
+        middleName:        name?.given?.[1]   ?? null,
+        dateOfBirth:       fhir.birthDate ? new Date(fhir.birthDate) : new Date('1900-01-01'),
+        gender:            fhir.gender        || 'unknown',
+        phoneNumber:       telecom.find((t: any) => t.system === 'phone')?.value ?? null,
+        email:             telecom.find((t: any) => t.system === 'email')?.value ?? null,
+        address:           addr ? { county: addr.state, subCounty: addr.district, ward: addr.city } : null,
+        isFederatedRecord: true,
+      }).returning();
 
-        // ⭐ Fetch encounters from ClinicConnect via HIE Gateway (with OTP)
-        const clinicConnectEncounters = await this.fetchViaHieGateway(nupi, otpToken);
+      return { patient, source: 'gateway' };
+    } catch (err: any) {
+      if (err.response?.status === 404) return null;
+      throw err;
+    }
+  }
 
-        console.log(`📊 ClinicConnect has ${clinicConnectEncounters.length} encounters`);
+  // ══════════════════════════════════════════════════════════════
+  //  SEARCH PATIENT BY NUPI PREFIX / NAME
+  //  Local DB only — for the facility's own patient list
+  // ══════════════════════════════════════════════════════════════
 
-        // Combine all encounters
-        const allEncounters = [
-        // Render Hospital encounters
-        ...localEncounters.map((e: any) => ({
-            id: e.id,
-            patientNupi: e.patientNupi,
-            encounterDate: e.encounterDate,
-            encounterType: e.encounterType,
-            chiefComplaint: e.chiefComplaint,
-            vitalSigns: e.vitalSigns,
-            diagnoses: e.diagnoses,
-            medications: e.medications,
-            notes: e.notes,
-            practitionerName: e.practitionerName,
-            facilityId: e.facilityId,
-            facilityName: process.env.FACILITY_NAME || 'Render Hospital',
-            source: 'Render Hospital',
-            systemType: 'postgres',
-            status: e.status,
-            createdAt: e.createdAt,
-        })),
-        // ClinicConnect encounters (via gateway)
-        ...clinicConnectEncounters
-        ]
-        // Sort by date (newest first)
-        .sort((a, b) => 
-        new Date(b.encounterDate).getTime() - new Date(a.encounterDate).getTime()
-        );
+  async searchNUPI(query: string) {
+    return db.query.patients.findMany({
+      where: or(
+        ilike(patients.nupi,      `%${query}%`),
+        ilike(patients.firstName, `%${query}%`),
+        ilike(patients.lastName,  `%${query}%`),
+        ilike(patients.nationalId,`%${query}%`),
+      ),
+      limit: 20,
+    });
+  }
 
-        console.log(`📊 Total combined encounters: ${allEncounters.length}`);
+  // ══════════════════════════════════════════════════════════════
+  //  VERIFY PATIENT IDENTITY
+  //  Step 1 — get security question from gateway
+  //  Step 2 — submit answer → get access token
+  //  The access token is what unlocks all cross-facility queries
+  // ══════════════════════════════════════════════════════════════
 
-        return {
-            patient,
-            encounters: allEncounters,
-            facilities: [
-                {
-                    facilityId: 'CLINIC_CONNECT',
-                    facilityName: 'ClinicConnect Clinic',
-                    systemType: 'firebase',
-                    encounterCount: clinicConnectEncounters.length,
-                    hasData: clinicConnectEncounters.length > 0
-                },
-                {
-                    facilityId: this.facilityId,
-                    facilityName: process.env.FACILITY_NAME || 'Render Hospital',
-                    systemType: 'postgres',
-                    encounterCount: localEncounters.length,
-                    hasData: localEncounters.length > 0
-                }
-            ],
-            facilitiesCount: 2,
-            totalEncounters: allEncounters.length,
-            consentVerified: true
-        };
+  async getSecurityQuestion(nationalId: string, dob: string) {
+    const res = await gateway.post('/api/verify/question', { nationalId, dob });
+    return res.data; // { nupi, question }
+  }
+
+  async verifyIdentity(data: {
+    nationalId: string;
+    dob:        string;
+    answer:     string;
+  }) {
+    // X-Facility-Id and X-Api-Key are already on the gateway client.
+    // The gateway also needs them on /api/verify/answer to confirm
+    // it's a registered facility requesting the token.
+    const res = await gateway.post('/api/verify/answer', {
+      nationalId:         data.nationalId,
+      dob:                data.dob,
+      answer:             data.answer,
+      requestingFacility: process.env.FACILITY_ID,
+    }, {
+      // Pass facility API key in header for this endpoint too
+      headers: { 'X-Api-Key': process.env.FACILITY_API_KEY || '' },
+    });
+
+    // res.data contains:
+    // { token, nupi, patient, facilitiesVisited, encounterIndex, consentId, blockIndex }
+    return res.data;
+  }
+
+  async verifyByPin(data: {
+    nationalId: string;
+    dob:        string;
+    pin:        string;
+  }) {
+    const res = await gateway.post('/api/verify/pin', {
+      nationalId:         data.nationalId,
+      dob:                data.dob,
+      pin:                data.pin,
+      requestingFacility: process.env.FACILITY_ID,
+    }, {
+      headers: { 'X-Api-Key': process.env.FACILITY_API_KEY || '' },
+    });
+    return res.data;
+  }
+
+  // ══════════════════════════════════════════════════════════════
+  //  PATIENT HISTORY FROM BLOCKCHAIN
+  //  Returns which facilities the patient has visited + encounter
+  //  index — all from the immutable blockchain record
+  // ══════════════════════════════════════════════════════════════
+
+  async getPatientHistory(nupi: string) {
+    const res = await gateway.get(`/api/patients/${nupi}/history`);
+    return res.data;
+    // { patient, facilitiesVisited, encounterIndex, auditTrail }
+  }
+
+  async getPatientFacilities(nupi: string) {
+    const history = await this.getPatientHistory(nupi);
+    return history.facilitiesVisited || [];
+  }
+
+  // ══════════════════════════════════════════════════════════════
+  //  ENCOUNTERS
+  // ══════════════════════════════════════════════════════════════
+
+  // Get this facility's encounters from local Neon DB
+  async getLocalEncounters(nupi: string) {
+    return db.query.encounters.findMany({
+      where: eq(encounters.patientNupi, nupi),
+      orderBy: (enc, { desc }) => [desc(enc.encounterDate)],
+    });
+  }
+
+  // Get encounters from a specific facility via gateway
+  // accessToken — bearer token from verifyIdentity()
+  async getEncountersFromFacility(nupi: string, facilityId: string, accessToken: string) {
+    const res = await gateway.get(`/api/fhir/Patient/${nupi}/Encounter`, {
+      params:  { facility: facilityId },
+      headers: { Authorization: `Bearer ${accessToken}` },
+    });
+    return res.data; // FHIR Bundle
+  }
+
+  // Get ALL encounters from ALL facilities the patient has visited
+  // This is the federated view — calls gateway $everything
+  async getFederatedEncounters(nupi: string, accessToken: string) {
+    const res = await gateway.get(`/api/fhir/Patient/${nupi}/$everything`, {
+      headers: { Authorization: `Bearer ${accessToken}` },
+    });
+    const bundle = res.data;
+
+    // Extract just the Encounter resources from the bundle
+    const encounters = bundle.entry
+      ?.map((e: any) => e.resource)
+      .filter((r: any) => r?.resourceType === 'Encounter') || [];
+
+    return { bundle, encounters };
+  }
+
+  // ══════════════════════════════════════════════════════════════
+  //  FULL FEDERATED PATIENT DATA
+  //  Combines local Neon data + all gateway data into one response.
+  //  This is what the doctor sees when they open a patient chart.
+  // ══════════════════════════════════════════════════════════════
+
+  async getFederatedPatientData(nupi: string, accessToken: string) {
+    // Run local + gateway calls in parallel where possible
+    const [localPatient, localEncounters, federatedBundle, chainHistory] = await Promise.all([
+      db.query.patients.findFirst({ where: eq(patients.nupi, nupi) }),
+      this.getLocalEncounters(nupi),
+      this.getFederatedEncounters(nupi, accessToken).catch(() => ({ bundle: null, encounters: [] })),
+      this.getPatientHistory(nupi).catch(() => null),
+    ]);
+
+    // Separate local encounters vs ones from other facilities
+    const facilityId = process.env.FACILITY_ID || '';
+
+    const localFormatted = localEncounters.map((e: any) => ({
+      ...e,
+      source:       'local',
+      facilityName: process.env.FACILITY_NAME || 'This Facility',
+    }));
+
+    const remoteEncounters = federatedBundle.encounters
+      .filter((e: any) => e.meta?.source !== facilityId) // exclude duplicates
+      .map((e: any) => ({
+        id:            e.id,
+        patientNupi:   nupi,
+        encounterDate: e.period?.start,
+        encounterType: e.class?.display,
+        chiefComplaint:e.reasonCode?.[0]?.text || null,
+        practitioner:  e.participant?.[0]?.individual?.display || null,
+        facilityId:    e.meta?.source,
+        facilityName:  e.meta?.sourceName || e.serviceProvider?.display,
+        source:        'gateway',
+        status:        e.status,
+      }));
+
+    const allEncounters = [...localFormatted, ...remoteEncounters]
+      .sort((a, b) => new Date(b.encounterDate).getTime() - new Date(a.encounterDate).getTime());
+
+    return {
+      patient:           localPatient,
+      encounters:        allEncounters,
+      localEncounters:   localFormatted,
+      remoteEncounters,
+      facilitiesVisited: chainHistory?.facilitiesVisited || [],
+      encounterIndex:    chainHistory?.encounterIndex    || [],
+      totalEncounters:   allEncounters.length,
+      consentVerified:   true,
+    };
+  }
+
+  // ══════════════════════════════════════════════════════════════
+  //  RECORD ENCOUNTER
+  //  1. Save full clinical data to local Neon DB
+  //  2. Notify gateway → mints ENCOUNTER_RECORDED block on chain
+  //     so other facilities know this patient was seen here
+  // ══════════════════════════════════════════════════════════════
+
+  async recordEncounter(data: {
+    nupi:             string;
+    encounterId?:     string;
+    encounterType:    string;
+    encounterDate?:   string;
+    chiefComplaint?:  string;
+    practitionerName?:string;
+    vitalSigns?:      object;
+    diagnoses?:       any[];
+    medications?:     any[];
+    notes?:           string;
+  }) {
+    // Look up the local patient row to get the UUID FK required by encounters.patientId
+    const localPatient = await db.query.patients.findFirst({
+      where: eq(patients.nupi, data.nupi),
+    });
+    if (!localPatient) throw new Error(`Patient ${data.nupi} not in local DB — register or check-in first`);
+
+    // ── Step 1: Save to local Neon DB ──────────────────────────
+    const [encounter] = await db.insert(encounters).values({
+      patientId:       localPatient.id,                                    // UUID FK — required
+      patientNupi:     data.nupi,
+      facilityId:      process.env.FACILITY_ID || '',
+      encounterType:   data.encounterType,
+      encounterDate:   data.encounterDate ? new Date(data.encounterDate) : new Date(),
+      chiefComplaint:  data.chiefComplaint    ?? null,
+      practitionerName:data.practitionerName  ?? 'Unknown',               // notNull in schema
+      vitalSigns:      data.vitalSigns        ?? null,
+      diagnoses:       data.diagnoses         ?? [],                       // notNull in schema
+      medications:     data.medications       ?? null,
+      notes:           data.notes             ?? null,
+      status:          'active',
+    }).returning();
+
+    // ── Step 2: Notify blockchain via gateway ──────────────────
+    // This mints ENCOUNTER_RECORDED block so other facilities
+    // know this patient was seen here.
+    try {
+      const chainRes = await gateway.post('/api/patients/encounter', {
+        nupi:             data.nupi,
+        encounterId:      encounter.id,
+        encounterType:    data.encounterType,
+        encounterDate:    encounter.encounterDate?.toISOString(),
+        chiefComplaint:   data.chiefComplaint   ?? null,
+        practitionerName: data.practitionerName ?? null,
+      });
+
+      console.log(`⛓  Encounter on chain: Block #${chainRes.data.blockIndex}`);
+      return { encounter, blockIndex: chainRes.data.blockIndex };
+    } catch (err: any) {
+      // Don't fail the local save if the chain notification fails —
+      // the clinical record is more important. Log and move on.
+      console.error('⚠️  Chain notification failed (encounter saved locally):', err.message);
+      return { encounter, blockIndex: null, chainError: err.message };
+    }
+  }
+
+  // ══════════════════════════════════════════════════════════════
+  //  CHECK-IN
+  //  Registers the patient's visit at this facility.
+  //  If the patient isn't in local DB, pull from gateway first.
+  // ══════════════════════════════════════════════════════════════
+
+  async checkIn(nupi: string, data: {
+    accessToken:      string;  // from verifyIdentity()
+    practitionerName?: string;
+    chiefComplaint?:   string;
+  }) {
+    // Ensure patient is in local DB
+    let local = await db.query.patients.findFirst({ where: eq(patients.nupi, nupi) });
+
+    if (!local) {
+      // Pull from gateway and cache locally
+      const result = await this.getByNupi(nupi, data.accessToken);
+      if (!result) throw new Error('Patient not found on AfyaNet');
+      local = result.patient;
     }
 
-    // ⭐ Fetch from ClinicConnect via HIE Gateway (OTP REQUIRED)
-    async fetchViaHieGateway(nupi: string, otpToken: string) {
-        try {
-            console.log(`🔐 Fetching from HIE Gateway with OTP verification`);
-            console.log(`🔗 Gateway URL: ${this.hieGatewayUrl}/patients/${nupi}/encounters`);
+    // Record a check-in encounter on chain
+    return this.recordEncounter({
+      nupi,
+      encounterType:    'check-in',
+      chiefComplaint:   data.chiefComplaint   || undefined,
+      practitionerName: data.practitionerName || undefined,
+    });
+  }
 
-            const response = await axios.get(
-                `${this.hieGatewayUrl}/patients/${nupi}/encounters`,
-                {
-                headers: {
-                    'X-OTP-Token': otpToken, // ⭐ OTP token is REQUIRED
-                    'X-Facility-Id': this.facilityId,
-                    'X-User-Id': 'system' // In production, use actual logged-in user
-                },
-                timeout: 10000,
-                }
-            );
+  // ══════════════════════════════════════════════════════════════
+  //  REGISTER VISIT  (alias for recordEncounter with visit data)
+  // ══════════════════════════════════════════════════════════════
 
-            if (response.data.success && response.data.consentVerified) {
-                console.log(`✅ Consent verified! Fetched ${response.data.count} encounters`);
-                return response.data.data;
-            }
-
-            console.log(`⚠️  No encounters or consent not verified`);
-            return [];
-        
-        } catch (error: any) {
-            if (error.response?.status === 401 || error.response?.status === 403) {
-                console.error(`❌ OTP consent verification failed`);
-                throw new Error('OTP consent verification failed. Please request new OTP.');
-            }
-        
-            if (error.response?.status === 404) {
-                console.log(`ℹ️  No encounters found for ${nupi}`);
-                return [];
-            }
-        
-            console.error(`❌ HIE Gateway error:`, error.message);
-            throw new Error('Failed to fetch from HIE Gateway');
-        }
-    }
-
-    async create(data: any) {
-        const [patient] = await db.insert(patients).values(data).returning();
-        return patient;
-    }
-
-    async getById(id: string) {
-        return await db.query.patients.findFirst({
-            where: eq(patients.id, id),
-        });
-    }
+  async registerVisit(nupi: string, data: {
+    accessToken:       string;
+    encounterType?:    string;
+    chiefComplaint?:   string;
+    practitionerName?: string;
+    vitalSigns?:       object;
+    diagnoses?:        any[];
+    medications?:      any[];
+    notes?:            string;
+  }) {
+    return this.recordEncounter({
+      nupi,
+      encounterType:    data.encounterType    ?? 'outpatient',
+      chiefComplaint:   data.chiefComplaint   || undefined,
+      practitionerName: data.practitionerName || undefined,
+      vitalSigns:       data.vitalSigns       || undefined,
+      diagnoses:        data.diagnoses        || undefined,
+      medications:      data.medications      || undefined,
+      notes:            data.notes            || undefined,
+    });
+  }
 }
 
 export const patientService = new PatientService();
