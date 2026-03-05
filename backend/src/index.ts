@@ -4,7 +4,6 @@ import helmet from 'helmet';
 import dotenv from 'dotenv';
 import authRoutes from './auth/auth.routes';
 import encounterRoutes from './encounter/encounter.routes';
-import otpRoutes from './otp/otp.routes';
 import patientRoutes from './patients/patient.routes';
 
 // Load environment variables
@@ -31,7 +30,6 @@ app.get('/health', (req, res) => {
 // API Routes
 app.use('/api/auth', authRoutes);
 app.use('/api/patients', patientRoutes);
-app.use('/api/otp', otpRoutes);
 app.use('/api/encounters', encounterRoutes);
 
 // 404 handler

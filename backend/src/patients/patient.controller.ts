@@ -16,7 +16,60 @@ export class PatientController {
 
   async create(req: Request, res: Response) {
     try {
-      const result = await patientService.create(req.body);
+      const b = req.body;
+
+      // ── Validate facility is configured ───────────────────────
+      // If FACILITY_ID or FACILITY_API_KEY are missing from .env
+      // the gateway will reject with 401. Catch it early with a
+      // clear message instead of a raw axios 401.
+      if (!process.env.FACILITY_ID || !process.env.FACILITY_API_KEY) {
+        return res.status(500).json({
+          success: false,
+          error:   'Facility not configured. Set FACILITY_ID and FACILITY_API_KEY in .env. ' +
+                   'These are issued by MoH when your facility is registered on AfyaLink.',
+        });
+      }
+
+      // ── Map frontend body → service fields ────────────────────
+      // Accepts either naming convention:
+      //   givenName / familyName  (FHIR-style, what the frontend sends)
+      //   firstName / lastName    (internal style)
+      const mapped = {
+        nationalId:       b.nationalId,
+        firstName:        b.firstName   || b.givenName,
+        lastName:         b.lastName    || b.familyName,
+        middleName:       b.middleName  || b.middleNames || undefined,
+        dateOfBirth:      b.dateOfBirth || b.dob,
+        gender:           b.gender,
+        phoneNumber:      b.phoneNumber || b.phone       || undefined,
+        email:            b.email                        || undefined,
+        address:          b.address ?? (
+          // Build address object from flat fields if present
+          b.county ? {
+            county:    b.county,
+            subCounty: b.subCounty  || undefined,
+            ward:      b.ward       || undefined,
+            village:   b.village    || undefined,
+          } : undefined
+        ),
+        // These MUST come from the registration form — no defaults
+        securityQuestion: b.securityQuestion,
+        securityAnswer:   b.securityAnswer,
+        pin:              b.pin,
+      };
+
+      // ── Validate required fields ───────────────────────────────
+      const missing = ['nationalId','firstName','lastName','dateOfBirth','gender','securityQuestion','securityAnswer','pin']
+        .filter(f => !mapped[f as keyof typeof mapped]);
+      if (missing.length) {
+        return res.status(400).json({
+          success: false,
+          error:   `Missing required fields: ${missing.join(', ')}`,
+          note:    'firstName can also be sent as givenName, lastName as familyName, dateOfBirth as dob',
+        });
+      }
+
+      const result = await patientService.create(mapped);
 
       return res.status(result.alreadyExists ? 200 : 201).json({
         success:       true,
@@ -29,7 +82,21 @@ export class PatientController {
           : 'Patient registered — block minted on AfyaChain',
       });
     } catch (error: any) {
-      return res.status(400).json({ success: false, error: error.message });
+      // Surface the real gateway error instead of a generic 400
+      const status  = error.response?.status;
+      const message = error.response?.data?.error || error.message;
+
+      if (status === 401) {
+        return res.status(401).json({
+          success: false,
+          error:   'Gateway rejected this facility\'s credentials.',
+          detail:  message,
+          fix:     'Check that FACILITY_ID and FACILITY_API_KEY in .env match what MoH issued. ' +
+                   'If your facility is not yet registered, ask MoH to run POST /api/moh/facilities/register.',
+        });
+      }
+
+      return res.status(status || 400).json({ success: false, error: message });
     }
   }
 
