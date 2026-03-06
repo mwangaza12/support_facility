@@ -9,8 +9,8 @@ import { Button } from '@/components/ui/button';
 let searchTimeout: ReturnType<typeof setTimeout>;
 
 export const Patients = () => {
-  const navigate                          = useNavigate();
-  const { searchResults, isSearching, search, error } = usePatientStore();
+  const navigate = useNavigate();
+  const { searchResults, isSearching, search, error, verifyPatient } = usePatientStore();
 
   // Verify flow
   const [verifyStep,    setVerifyStep]    = useState<'idle' | 'question' | 'answer'>('idle');
@@ -28,7 +28,7 @@ export const Patients = () => {
     searchTimeout = setTimeout(() => search(q), 400);
   }, [search]);
 
-  // Step 1 — get question
+  // Step 1 — get security question
   const handleGetQuestion = async () => {
     if (!nationalId || !dob) return;
     setVerifyLoading(true); setVerifyError('');
@@ -41,13 +41,13 @@ export const Patients = () => {
     } finally { setVerifyLoading(false); }
   };
 
-  // Step 2 — verify answer → navigate to patient chart
+  // Step 2 — verify answer via store action (sets currentPatient + accessToken)
   const handleVerify = async () => {
     setVerifyLoading(true); setVerifyError('');
     try {
-      const res  = await patientApi.verifyAnswer({ nationalId, dob, answer });
-      const data = res.data || res;
-      usePatientStore.setState({ accessToken: data.token, facilitiesVisited: data.facilitiesVisited || [] });
+      // verifyPatient stores patient + token in the store
+      // so PatientDetail will have currentPatient ready immediately
+      const data = await verifyPatient(nationalId, dob, answer);
       navigate(`/patients/${data.nupi}`);
     } catch (err: any) {
       setVerifyError(err.response?.data?.error || err.message);
@@ -67,7 +67,7 @@ export const Patients = () => {
 
       <div className="grid md:grid-cols-2 gap-6">
 
-        {/* ── Search local patients ────────────────────────── */}
+        {/* ── Search local patients ──────────────────────────────── */}
         <div className="bg-white rounded-xl border border-slate-200 p-5 shadow-sm space-y-4">
           <h2 className="font-semibold text-slate-700 text-sm">Search Local Records</h2>
           <div className="relative">
@@ -112,7 +112,7 @@ export const Patients = () => {
           )}
         </div>
 
-        {/* ── Verify returning patient ─────────────────────── */}
+        {/* ── Verify returning patient ───────────────────────────── */}
         <div className="bg-white rounded-xl border border-slate-200 p-5 shadow-sm space-y-4">
           <h2 className="font-semibold text-slate-700 text-sm">Verify Returning Patient</h2>
           <p className="text-xs text-slate-400">
@@ -135,7 +135,9 @@ export const Patients = () => {
                 className="w-full bg-teal-600 hover:bg-teal-700 text-white"
                 onClick={handleGetQuestion}
                 disabled={verifyLoading || !nationalId || !dob}>
-                {verifyLoading ? <Loader2 size={15} className="animate-spin" /> : 'Get Security Question'}
+                {verifyLoading
+                  ? <Loader2 size={15} className="animate-spin" />
+                  : 'Get Security Question'}
               </Button>
             </div>
           )}
@@ -162,7 +164,9 @@ export const Patients = () => {
                   className="flex-1 bg-teal-600 hover:bg-teal-700 text-white"
                   onClick={handleVerify}
                   disabled={verifyLoading || !answer}>
-                  {verifyLoading ? <Loader2 size={15} className="animate-spin" /> : 'Verify & Open Chart'}
+                  {verifyLoading
+                    ? <Loader2 size={15} className="animate-spin" />
+                    : 'Verify & Open Chart'}
                 </Button>
               </div>
             </div>

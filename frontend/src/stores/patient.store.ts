@@ -84,16 +84,25 @@ export const usePatientStore = create<PatientState>((set, get) => ({
   },
 
   verifyPatient: async (nationalId, dob, answer) => {
-    const res = await patientApi.verifyAnswer({ nationalId, dob, answer });
-    const data = res.data;
-    set({ accessToken: data.token, facilitiesVisited: data.facilitiesVisited || [] });
+    const res  = await patientApi.verifyAnswer({ nationalId, dob, answer });
+    const data = res.data || res;
+    // Store patient from verify response — used as fallback if federated load has no patient
+    set({
+      accessToken:       data.token,
+      facilitiesVisited: data.facilitiesVisited || [],
+      currentPatient:    data.patient || null,
+    });
     return data;
   },
 
   verifyByPin: async (nationalId, dob, pin) => {
-    const res = await patientApi.verifyPin({ nationalId, dob, pin });
-    const data = res.data;
-    set({ accessToken: data.token, facilitiesVisited: data.facilitiesVisited || [] });
+    const res  = await patientApi.verifyPin({ nationalId, dob, pin });
+    const data = res.data || res;
+    set({
+      accessToken:       data.token,
+      facilitiesVisited: data.facilitiesVisited || [],
+      currentPatient:    data.patient || null,
+    });
     return data;
   },
 
@@ -101,11 +110,13 @@ export const usePatientStore = create<PatientState>((set, get) => ({
     const { accessToken } = get();
     set({ isLoadingPatient: true, error: null });
     try {
-      const res = await patientApi.getFederatedData(nupi, accessToken || '');
+      const res  = await patientApi.getFederatedData(nupi, accessToken || '');
+      const data = res.data;
       set({
-        currentPatient:    res.data?.patient  || null,
-        encounters:        res.data?.encounters || [],
-        facilitiesVisited: res.data?.facilitiesVisited || [],
+        // Keep patient from verify step if federated response has no patient
+        currentPatient:    data?.patient ?? get().currentPatient ?? undefined,
+        encounters:        data?.encounters || data?.localEncounters || [],
+        facilitiesVisited: data?.facilitiesVisited || get().facilitiesVisited,
         isLoadingPatient:  false,
       });
     } catch (err: any) {
