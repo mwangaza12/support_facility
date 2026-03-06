@@ -313,7 +313,6 @@ export class PatientService {
   // ══════════════════════════════════════════════════════════════
 
   async getFederatedPatientData(nupi: string, accessToken: string) {
-    // Run local + gateway calls in parallel where possible
     const [localPatient, localEncounters, federatedBundle, chainHistory] = await Promise.all([
       db.query.patients.findFirst({ where: eq(patients.nupi, nupi) }),
       this.getLocalEncounters(nupi),
@@ -321,7 +320,17 @@ export class PatientService {
       this.getPatientHistory(nupi).catch(() => null),
     ]);
 
-    // Separate local encounters vs ones from other facilities
+    // ── If patient isn't local, pull from gateway ──────────────
+    let patient = localPatient ?? undefined;
+    if (!patient) {
+      try {
+        const result = await this.getByNupi(nupi, accessToken);
+        patient = result?.patient ?? undefined;
+      } catch {
+        // patient stays undefined
+      }
+    }
+
     const facilityId = process.env.FACILITY_ID || '';
 
     const localFormatted = localEncounters.map((e: any) => ({
@@ -331,25 +340,25 @@ export class PatientService {
     }));
 
     const remoteEncounters = federatedBundle.encounters
-      .filter((e: any) => e.meta?.source !== facilityId) // exclude duplicates
+      .filter((e: any) => e.meta?.source !== facilityId)
       .map((e: any) => ({
-        id:            e.id,
-        patientNupi:   nupi,
-        encounterDate: e.period?.start,
-        encounterType: e.class?.display,
-        chiefComplaint:e.reasonCode?.[0]?.text || null,
-        practitioner:  e.participant?.[0]?.individual?.display || null,
-        facilityId:    e.meta?.source,
-        facilityName:  e.meta?.sourceName || e.serviceProvider?.display,
-        source:        'gateway',
-        status:        e.status,
+        id:             e.id,
+        patientNupi:    nupi,
+        encounterDate:  e.period?.start,
+        encounterType:  e.class?.display,
+        chiefComplaint: e.reasonCode?.[0]?.text || null,
+        practitioner:   e.participant?.[0]?.individual?.display || null,
+        facilityId:     e.meta?.source,
+        facilityName:   e.meta?.sourceName || e.serviceProvider?.display,
+        source:         'gateway',
+        status:         e.status,
       }));
 
     const allEncounters = [...localFormatted, ...remoteEncounters]
       .sort((a, b) => new Date(b.encounterDate).getTime() - new Date(a.encounterDate).getTime());
 
     return {
-      patient:           localPatient,
+      patient,                                          // ← now populated from gateway if not local
       encounters:        allEncounters,
       localEncounters:   localFormatted,
       remoteEncounters,
