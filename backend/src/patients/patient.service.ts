@@ -29,9 +29,9 @@ import { patients, encounters } from '../db/schema';
 function createGatewayClient(): AxiosInstance {
   const client = axios.create({
     baseURL: process.env.HIE_GATEWAY_URL || 'http://localhost:5000',
-    timeout: 10000,
+    timeout: 60000, // 60s — allows for Render free tier cold start (~30-50s)
     headers: {
-      'X-Facility-Id': process.env.FACILITY_ID   || '',
+      'X-Facility-Id': process.env.FACILITY_ID    || '',
       'X-Api-Key':     process.env.FACILITY_API_KEY || '',
       'Content-Type':  'application/json',
     },
@@ -65,7 +65,7 @@ export class PatientService {
     lastName:         string;
     middleName?:      string;
     dateOfBirth:      string;   // YYYY-MM-DD
-    gender:           string;
+    gender:           'male' | 'female' | 'other' | 'unknown';
     phoneNumber?:     string;
     email?:           string;
     address?:         object;
@@ -112,10 +112,11 @@ export class PatientService {
       lastName:    data.lastName,
       middleName:  data.middleName  ?? null,
       dateOfBirth: new Date(data.dateOfBirth),
-      gender:      data.gender,
+      gender:      (data.gender ?? 'unknown') as 'male' | 'female' | 'other' | 'unknown',
       phoneNumber: data.phoneNumber ?? null,
       email:       data.email       ?? null,
       address:     data.address     ?? null,
+      registeredFacilityId: process.env.FACILITY_ID || null,   // ← add this
     }).returning();
 
     console.log(`✅ Patient registered: ${nupi} | Block #${blockIndex}`);
@@ -169,7 +170,7 @@ export class PatientService {
         lastName:          name?.family       || 'Unknown',
         middleName:        name?.given?.[1]   ?? null,
         dateOfBirth:       fhir.birthDate ? new Date(fhir.birthDate) : new Date('1900-01-01'),
-        gender:            fhir.gender        || 'unknown',
+        gender:            (fhir.gender || 'unknown') as 'male' | 'female' | 'other' | 'unknown',
         phoneNumber:       telecom.find((t: any) => t.system === 'phone')?.value ?? null,
         email:             telecom.find((t: any) => t.system === 'email')?.value ?? null,
         address:           addr ? { county: addr.state, subCounty: addr.district, ward: addr.city } : null,
@@ -370,7 +371,7 @@ export class PatientService {
   async recordEncounter(data: {
     nupi:             string;
     encounterId?:     string;
-    encounterType:    string;
+    encounterType:    'outpatient' | 'inpatient' | 'emergency' | 'check-in' | 'referral' | 'virtual';
     encounterDate?:   string;
     chiefComplaint?:  string;
     practitionerName?:string;
@@ -387,18 +388,18 @@ export class PatientService {
 
     // ── Step 1: Save to local Neon DB ──────────────────────────
     const [encounter] = await db.insert(encounters).values({
-      patientId:       localPatient.id,                                    // UUID FK — required
-      patientNupi:     data.nupi,
-      facilityId:      process.env.FACILITY_ID || '',
-      encounterType:   data.encounterType,
-      encounterDate:   data.encounterDate ? new Date(data.encounterDate) : new Date(),
-      chiefComplaint:  data.chiefComplaint    ?? null,
-      practitionerName:data.practitionerName  ?? 'Unknown',               // notNull in schema
-      vitalSigns:      data.vitalSigns        ?? null,
-      diagnoses:       data.diagnoses         ?? [],                       // notNull in schema
-      medications:     data.medications       ?? null,
-      notes:           data.notes             ?? null,
-      status:          'active',
+      patientId:        localPatient.id,
+      patientNupi:      data.nupi,
+      facilityId:       process.env.FACILITY_ID || '',
+      encounterType:    (data.encounterType ?? 'outpatient') as 'outpatient' | 'inpatient' | 'emergency' | 'check-in' | 'referral' | 'virtual',
+      encounterDate:    data.encounterDate ? new Date(data.encounterDate) : new Date(),
+      chiefComplaint:   data.chiefComplaint    ?? null,
+      practitionerName: data.practitionerName  ?? 'Unknown',
+      vitalSigns:       data.vitalSigns        ?? null,
+      diagnoses:        data.diagnoses         ?? [],
+      medications:      data.medications       ?? null,
+      notes:            data.notes             ?? null,
+      status:           'finished',
     }).returning();
 
     // ── Step 2: Notify blockchain via gateway ──────────────────
@@ -460,7 +461,7 @@ export class PatientService {
 
   async registerVisit(nupi: string, data: {
     accessToken:       string;
-    encounterType?:    string;
+    encounterType?:    'outpatient' | 'inpatient' | 'emergency' | 'check-in' | 'referral' | 'virtual';
     chiefComplaint?:   string;
     practitionerName?: string;
     vitalSigns?:       object;
@@ -482,3 +483,26 @@ export class PatientService {
 }
 
 export const patientService = new PatientService();
+
+
+// ── Keep-alive ping ───────────────────────────────────────────────
+// Render free tier spins down after 15 min inactivity.
+// Ping the gateway every 10 minutes so it stays warm.
+// Call startGatewayKeepAlive() once in your app entry point (server.ts / index.ts).
+
+export function startGatewayKeepAlive() {
+  if (process.env.NODE_ENV !== 'production') return;
+
+  const INTERVAL = 10 * 60 * 1000; // 10 minutes
+
+  setInterval(async () => {
+    try {
+      await gateway.get('/health');
+      console.log('🏓 Gateway keep-alive ping OK');
+    } catch {
+      console.warn('⚠️  Gateway keep-alive ping failed — it may be cold starting');
+    }
+  }, INTERVAL);
+
+  console.log('🏓 Gateway keep-alive started (every 10 min)');
+}

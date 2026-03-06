@@ -1,6 +1,7 @@
 // src/controllers/authController.ts
 import { Request, Response } from 'express';
 import { authService } from './auth.service';
+import { UserRole } from '../db/schema';
 
 export class AuthController {
     async login(req: Request, res: Response) {
@@ -56,6 +57,27 @@ export class AuthController {
                 success: false,
                 error: error.message,
             });
+        }
+    }
+
+    async addStaff(req: Request, res: Response) {
+        try {
+            const { firstName, lastName, email, password, role, department } = req.body;
+            if (!firstName || !lastName || !email || !password || !role)
+            return res.status(400).json({ error: 'firstName, lastName, email, password and role are required' });
+
+            const staff = await authService.addStaff({
+                firstName, lastName, email, password,
+                role: role as UserRole,
+                department,
+                createdBy: String(req.params.id)
+            });
+
+            return res.status(201).json({ success: true, data: staff, message: 'Staff added and credentialed on AfyaChain' });
+        } catch (error: any) {
+            if (error.code === '23505')
+            return res.status(409).json({ error: 'Email already exists' });
+            return res.status(500).json({ error: error.message });
         }
     }
 }
