@@ -225,7 +225,6 @@ export class PatientService {
       nationalId:         data.nationalId,
       dob:                data.dob,
       answer:             data.answer,
-      requestingFacility: process.env.FACILITY_ID,
     }, {
       // Pass facility API key in header for this endpoint too
       headers: { 'X-Api-Key': process.env.FACILITY_API_KEY || '' },
