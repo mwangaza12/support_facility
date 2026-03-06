@@ -20,45 +20,46 @@ export interface Patient {
 }
 
 export interface Encounter {
-  id:              string;
-  patientNupi:     string;
-  encounterDate:   string;
-  encounterType:   string;
-  chiefComplaint:  string | null;
-  practitionerName:string;
-  vitalSigns:      any | null;
-  diagnoses:       any[];
-  medications:     any[] | null;
-  notes:           string | null;
-  facilityId:      string;
-  facilityName?:   string;
-  source:          'local' | 'gateway';
-  status:          string;
+  id:               string;
+  patientNupi:      string;
+  encounterDate:    string;
+  encounterType:    string;
+  chiefComplaint:   string | null;
+  practitionerName: string;
+  vitalSigns:       any | null;
+  diagnoses:        any[];
+  medications:      any[] | null;
+  notes:            string | null;
+  facilityId:       string;
+  facilityName?:    string;
+  source:           'local' | 'gateway';
+  status:           string;
 }
 
 interface PatientState {
   // Search
-  searchResults:  Patient[];
-  searchQuery:    string;
-  isSearching:    boolean;
+  searchResults: Patient[];
+  searchQuery:   string;
+  isSearching:   boolean;
 
   // Current patient
   currentPatient:    Patient | null;
   encounters:        Encounter[];
-  accessToken:       string | null;   // patient's verified token
+  accessToken:       string | null;
   facilitiesVisited: any[];
   isLoadingPatient:  boolean;
+  isCheckedIn:       boolean;   // true once patient exists in local DB
 
   // UI
   error: string | null;
 
   // Actions
-  search:         (query: string) => Promise<void>;
-  verifyPatient:  (nationalId: string, dob: string, answer: string) => Promise<any>;
-  verifyByPin:    (nationalId: string, dob: string, pin: string) => Promise<any>;
-  loadPatient:    (nupi: string) => Promise<void>;
-  clearPatient:   () => void;
-  clearError:     () => void;
+  search:        (query: string) => Promise<void>;
+  verifyPatient: (nationalId: string, dob: string, answer: string) => Promise<any>;
+  verifyByPin:   (nationalId: string, dob: string, pin: string) => Promise<any>;
+  loadPatient:   (nupi: string) => Promise<void>;
+  clearPatient:  () => void;
+  clearError:    () => void;
 }
 
 export const usePatientStore = create<PatientState>((set, get) => ({
@@ -70,6 +71,7 @@ export const usePatientStore = create<PatientState>((set, get) => ({
   accessToken:       null,
   facilitiesVisited: [],
   isLoadingPatient:  false,
+  isCheckedIn:       false,
   error:             null,
 
   search: async (query) => {
@@ -86,7 +88,6 @@ export const usePatientStore = create<PatientState>((set, get) => ({
   verifyPatient: async (nationalId, dob, answer) => {
     const res  = await patientApi.verifyAnswer({ nationalId, dob, answer });
     const data = res.data || res;
-    // Store patient from verify response — used as fallback if federated load has no patient
     set({
       accessToken:       data.token,
       facilitiesVisited: data.facilitiesVisited || [],
@@ -110,14 +111,29 @@ export const usePatientStore = create<PatientState>((set, get) => ({
     const { accessToken } = get();
     set({ isLoadingPatient: true, error: null });
     try {
+      // ── Step 1: Silent check-in ──────────────────────────────
+      // This calls the backend which pulls patient from gateway
+      // and caches them in the local DB if not already there.
+      // After this, recordEncounter will always find them locally.
+      let checkedIn = false;
+      try {
+        await patientApi.checkIn(nupi, accessToken || '');
+        checkedIn = true;
+      } catch {
+        // Check-in may fail if patient is already local — that's fine
+        checkedIn = true;
+      }
+
+      // ── Step 2: Load federated data ──────────────────────────
       const res  = await patientApi.getFederatedData(nupi, accessToken || '');
       const data = res.data;
+
       set({
-        // Keep patient from verify step if federated response has no patient
-        currentPatient:    data?.patient ?? get().currentPatient ?? undefined,
+        currentPatient:    data?.patient ?? get().currentPatient ?? null,
         encounters:        data?.encounters || data?.localEncounters || [],
         facilitiesVisited: data?.facilitiesVisited || get().facilitiesVisited,
         isLoadingPatient:  false,
+        isCheckedIn:       checkedIn,
       });
     } catch (err: any) {
       set({ isLoadingPatient: false, error: err.message });
@@ -125,7 +141,8 @@ export const usePatientStore = create<PatientState>((set, get) => ({
   },
 
   clearPatient: () => set({
-    currentPatient: null, encounters: [], accessToken: null, facilitiesVisited: [],
+    currentPatient: null, encounters: [], accessToken: null,
+    facilitiesVisited: [], isCheckedIn: false,
   }),
 
   clearError: () => set({ error: null }),

@@ -4,63 +4,71 @@ import { apiClient } from './auth.api';
 
 export const patientApi = {
   search: async (query: string) => {
-    const res = await apiClient.get('/patients/search/nupi', { params: { query } });
+    const res = await apiClient.get('/api/patients/search/nupi', { params: { query } });
     return res.data;
   },
 
   getByNupi: async (nupi: string, token?: string) => {
-    const res = await apiClient.get(`/patients/nupi/${nupi}`, {
+    const res = await apiClient.get(`/api/patients/nupi/${nupi}`, {
       headers: token ? { Authorization: `Bearer ${token}` } : {},
     });
     return res.data;
   },
 
   getById: async (id: string) => {
-    const res = await apiClient.get(`/patients/id/${id}`);
+    const res = await apiClient.get(`/api/patients/id/${id}`);
     return res.data;
   },
 
   create: async (data: Record<string, any>) => {
-    const res = await apiClient.post('/patients', data);
+    const res = await apiClient.post('/api/patients', data);
     return res.data;
   },
 
   getSecurityQuestion: async (nationalId: string, dob: string) => {
-    const res = await apiClient.get('/patients/verify/question', { params: { nationalId, dob } });
+    const res = await apiClient.get('/api/patients/verify/question', { params: { nationalId, dob } });
     return res.data;
   },
 
   verifyAnswer: async (data: { nationalId: string; dob: string; answer: string }) => {
-    const res = await apiClient.post('/patients/verify/answer', data);
+    const res = await apiClient.post('/api/patients/verify/answer', data);
     return res.data;
   },
 
   verifyPin: async (data: { nationalId: string; dob: string; pin: string }) => {
-    const res = await apiClient.post('/patients/verify/pin', data);
+    const res = await apiClient.post('/api/patients/verify/pin', data);
     return res.data;
   },
 
   getFederatedData: async (nupi: string, accessToken: string) => {
-    const res = await apiClient.get(`/patients/${nupi}/federated`, {
+    const res = await apiClient.get(`/api/patients/${nupi}/federated`, {
       headers: { Authorization: `Bearer ${accessToken}` },
     });
     return res.data;
   },
 
   getLocalEncounters: async (nupi: string) => {
-    const res = await apiClient.get(`/patients/${nupi}/encounters`);
+    const res = await apiClient.get(`/api/patients/${nupi}/encounters`);
     return res.data;
   },
 
   recordVisit: async (nupi: string, accessToken: string, data: Record<string, any>) => {
-    const res = await apiClient.post(`/patients/${nupi}/visit`, data, {
+    const res = await apiClient.post(`/api/patients/${nupi}/visit`, data, {
       headers: { Authorization: `Bearer ${accessToken}` },
     });
     return res.data;
   },
 
   getFacilities: async (nupi: string) => {
-    const res = await apiClient.get(`/patients/${nupi}/facilities`);
+    const res = await apiClient.get(`/api/patients/${nupi}/facilities`);
+    return res.data;
+  },
+
+  // Silent check-in — caches patient in local DB from gateway
+  checkIn: async (nupi: string, accessToken: string) => {
+    const res = await apiClient.post(`/api/patients/${nupi}/checkin`, {}, {
+      headers: { Authorization: `Bearer ${accessToken}` },
+    });
     return res.data;
   },
 };
@@ -76,7 +84,7 @@ export const staffApi = {
     role:        string;
     department?: string;
   }) => {
-    const res = await apiClient.post('/auth/staff', data);
+    const res = await apiClient.post('/api/auth/staff', data);
     return res.data;
   },
 };
