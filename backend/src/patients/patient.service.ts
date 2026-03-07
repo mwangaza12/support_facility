@@ -22,22 +22,18 @@ import db from '../db/db';
 import { patients, encounters } from '../db/schema';
 
 // ── Gateway client ────────────────────────────────────────────────
-// Single axios instance with facility credentials pre-attached.
-// Every request this facility makes to the gateway uses these headers
-// so the gateway can verify it's a legitimate registered facility.
 
 function createGatewayClient(): AxiosInstance {
   const client = axios.create({
     baseURL: process.env.HIE_GATEWAY_URL || 'http://localhost:5000',
-    timeout: 60000, // 60s — allows for Render free tier cold start (~30-50s)
+    timeout: 60000,
     headers: {
-      'X-Facility-Id': process.env.FACILITY_ID    || '',
+      'X-Facility-Id': process.env.FACILITY_ID     || '',
       'X-Api-Key':     process.env.FACILITY_API_KEY || '',
       'Content-Type':  'application/json',
     },
   });
 
-  // Log every gateway call in development
   if (process.env.NODE_ENV === 'development') {
     client.interceptors.request.use(req => {
       console.log(`→ Gateway: ${req.method?.toUpperCase()} ${req.url}`);
@@ -56,7 +52,6 @@ export class PatientService {
 
   // ══════════════════════════════════════════════════════════════
   //  PATIENT REGISTRATION
-  //  Saves to local Neon DB + registers on blockchain via gateway
   // ══════════════════════════════════════════════════════════════
 
   async create(data: {
@@ -64,23 +59,21 @@ export class PatientService {
     firstName:        string;
     lastName:         string;
     middleName?:      string;
-    dateOfBirth:      string;   // YYYY-MM-DD
+    dateOfBirth:      string;
     gender:           'male' | 'female' | 'other' | 'unknown';
     phoneNumber?:     string;
     email?:           string;
     address?:         object;
     securityQuestion: string;
     securityAnswer:   string;
-    pin:              string;   // exactly 4 digits
+    pin:              string;
   }) {
-    // ── Step 1: Derive NUPI from gateway (deterministic hash) ──
     const nupiRes = await gateway.post('/api/patients/nupi', {
       nationalId: data.nationalId,
       dob:        data.dateOfBirth,
     });
     const nupi: string = nupiRes.data.nupi;
 
-    // ── Step 2: Check if patient already exists locally ────────
     const existing = await db.query.patients.findFirst({
       where: eq(patients.nupi, nupi),
     });
@@ -88,9 +81,6 @@ export class PatientService {
       return { patient: existing, alreadyExists: true, nupi };
     }
 
-    // ── Step 3: Register on blockchain via gateway ─────────────
-    // This mints a PATIENT_REGISTERED block and auto-grants
-    // network consent so all facilities can see this patient.
     const chainRes = await gateway.post('/api/patients/register', {
       nationalId:       data.nationalId,
       dob:              data.dateOfBirth,
@@ -102,21 +92,18 @@ export class PatientService {
 
     const { blockIndex } = chainRes.data;
 
-    // ── Step 4: Save to local Neon DB ──────────────────────────
-    // We do NOT store the security answer or PIN locally —
-    // those live only on the gateway/blockchain (hashed).
     const [patient] = await db.insert(patients).values({
       nupi,
-      nationalId:  data.nationalId,
-      firstName:   data.firstName,
-      lastName:    data.lastName,
-      middleName:  data.middleName  ?? null,
-      dateOfBirth: new Date(data.dateOfBirth),
-      gender:      (data.gender ?? 'unknown') as 'male' | 'female' | 'other' | 'unknown',
-      phoneNumber: data.phoneNumber ?? null,
-      email:       data.email       ?? null,
-      address:     data.address     ?? null,
-      registeredFacilityId: process.env.FACILITY_ID || null,   // ← add this
+      nationalId:           data.nationalId,
+      firstName:            data.firstName,
+      lastName:             data.lastName,
+      middleName:           data.middleName  ?? null,
+      dateOfBirth:          new Date(data.dateOfBirth),
+      gender:               (data.gender ?? 'unknown') as 'male' | 'female' | 'other' | 'unknown',
+      phoneNumber:          data.phoneNumber ?? null,
+      email:                data.email       ?? null,
+      address:              data.address     ?? null,
+      registeredFacilityId: process.env.FACILITY_ID || null,
     }).returning();
 
     console.log(`✅ Patient registered: ${nupi} | Block #${blockIndex}`);
@@ -135,21 +122,16 @@ export class PatientService {
 
   // ══════════════════════════════════════════════════════════════
   //  GET PATIENT BY NUPI
-  //  Checks local DB first, then gateway if not found locally.
-  //  accessToken — the bearer token from /api/verify/answer
+  //  Local DB first, then gateway fallback + local cache
   // ══════════════════════════════════════════════════════════════
 
   async getByNupi(nupi: string, accessToken?: string) {
-    // ── Local first ────────────────────────────────────────────
     const local = await db.query.patients.findFirst({
       where: eq(patients.nupi, nupi),
     });
     if (local) return { patient: local, source: 'local' };
 
-    // ── Not local — query gateway ──────────────────────────────
-    if (!accessToken) {
-      return null; // can't query gateway without a verified token
-    }
+    if (!accessToken) return null;
 
     try {
       const res = await gateway.get(`/api/fhir/Patient/${nupi}`, {
@@ -159,10 +141,9 @@ export class PatientService {
       const fhir = res.data;
       if (!fhir || fhir.resourceType !== 'Patient') return null;
 
-      // Cache the federated record locally so future lookups are fast
-      const name   = fhir.name?.[0];
+      const name    = fhir.name?.[0];
       const telecom = fhir.telecom || [];
-      const addr   = fhir.address?.[0];
+      const addr    = fhir.address?.[0];
 
       const [patient] = await db.insert(patients).values({
         nupi,
@@ -185,17 +166,16 @@ export class PatientService {
   }
 
   // ══════════════════════════════════════════════════════════════
-  //  SEARCH PATIENT BY NUPI PREFIX / NAME
-  //  Local DB only — for the facility's own patient list
+  //  SEARCH
   // ══════════════════════════════════════════════════════════════
 
   async searchNUPI(query: string) {
     return db.query.patients.findMany({
       where: or(
-        ilike(patients.nupi,      `%${query}%`),
-        ilike(patients.firstName, `%${query}%`),
-        ilike(patients.lastName,  `%${query}%`),
-        ilike(patients.nationalId,`%${query}%`),
+        ilike(patients.nupi,       `%${query}%`),
+        ilike(patients.firstName,  `%${query}%`),
+        ilike(patients.lastName,   `%${query}%`),
+        ilike(patients.nationalId, `%${query}%`),
       ),
       limit: 20,
     });
@@ -203,43 +183,25 @@ export class PatientService {
 
   // ══════════════════════════════════════════════════════════════
   //  VERIFY PATIENT IDENTITY
-  //  Step 1 — get security question from gateway
-  //  Step 2 — submit answer → get access token
-  //  The access token is what unlocks all cross-facility queries
   // ══════════════════════════════════════════════════════════════
 
   async getSecurityQuestion(nationalId: string, dob: string) {
     const res = await gateway.post('/api/verify/question', { nationalId, dob });
-    return res.data; // { nupi, question }
-  }
-
-  async verifyIdentity(data: {
-    nationalId: string;
-    dob:        string;
-    answer:     string;
-  }) {
-    // X-Facility-Id and X-Api-Key are already on the gateway client.
-    // The gateway also needs them on /api/verify/answer to confirm
-    // it's a registered facility requesting the token.
-    const res = await gateway.post('/api/verify/answer', {
-      nationalId:         data.nationalId,
-      dob:                data.dob,
-      answer:             data.answer,
-    }, {
-      // Pass facility API key in header for this endpoint too
-      headers: { 'X-Api-Key': process.env.FACILITY_API_KEY || '' },
-    });
-
-    // res.data contains:
-    // { token, nupi, patient, facilitiesVisited, encounterIndex, consentId, blockIndex }
     return res.data;
   }
 
-  async verifyByPin(data: {
-    nationalId: string;
-    dob:        string;
-    pin:        string;
-  }) {
+  async verifyIdentity(data: { nationalId: string; dob: string; answer: string }) {
+    const res = await gateway.post('/api/verify/answer', {
+      nationalId: data.nationalId,
+      dob:        data.dob,
+      answer:     data.answer,
+    }, {
+      headers: { 'X-Api-Key': process.env.FACILITY_API_KEY || '' },
+    });
+    return res.data;
+  }
+
+  async verifyByPin(data: { nationalId: string; dob: string; pin: string }) {
     const res = await gateway.post('/api/verify/pin', {
       nationalId:         data.nationalId,
       dob:                data.dob,
@@ -253,14 +215,11 @@ export class PatientService {
 
   // ══════════════════════════════════════════════════════════════
   //  PATIENT HISTORY FROM BLOCKCHAIN
-  //  Returns which facilities the patient has visited + encounter
-  //  index — all from the immutable blockchain record
   // ══════════════════════════════════════════════════════════════
 
   async getPatientHistory(nupi: string) {
     const res = await gateway.get(`/api/patients/${nupi}/history`);
     return res.data;
-    // { patient, facilitiesVisited, encounterIndex, auditTrail }
   }
 
   async getPatientFacilities(nupi: string) {
@@ -272,7 +231,6 @@ export class PatientService {
   //  ENCOUNTERS
   // ══════════════════════════════════════════════════════════════
 
-  // Get this facility's encounters from local Neon DB
   async getLocalEncounters(nupi: string) {
     return db.query.encounters.findMany({
       where: eq(encounters.patientNupi, nupi),
@@ -280,36 +238,27 @@ export class PatientService {
     });
   }
 
-  // Get encounters from a specific facility via gateway
-  // accessToken — bearer token from verifyIdentity()
   async getEncountersFromFacility(nupi: string, facilityId: string, accessToken: string) {
     const res = await gateway.get(`/api/fhir/Patient/${nupi}/Encounter`, {
       params:  { facility: facilityId },
       headers: { Authorization: `Bearer ${accessToken}` },
     });
-    return res.data; // FHIR Bundle
+    return res.data;
   }
 
-  // Get ALL encounters from ALL facilities the patient has visited
-  // This is the federated view — calls gateway $everything
   async getFederatedEncounters(nupi: string, accessToken: string) {
     const res = await gateway.get(`/api/fhir/Patient/${nupi}/$everything`, {
       headers: { Authorization: `Bearer ${accessToken}` },
     });
     const bundle = res.data;
-
-    // Extract just the Encounter resources from the bundle
     const encounters = bundle.entry
       ?.map((e: any) => e.resource)
       .filter((r: any) => r?.resourceType === 'Encounter') || [];
-
     return { bundle, encounters };
   }
 
   // ══════════════════════════════════════════════════════════════
   //  FULL FEDERATED PATIENT DATA
-  //  Combines local Neon data + all gateway data into one response.
-  //  This is what the doctor sees when they open a patient chart.
   // ══════════════════════════════════════════════════════════════
 
   async getFederatedPatientData(nupi: string, accessToken: string) {
@@ -320,14 +269,13 @@ export class PatientService {
       this.getPatientHistory(nupi).catch(() => null),
     ]);
 
-    // ── If patient isn't local, pull from gateway ──────────────
     let patient = localPatient ?? undefined;
     if (!patient) {
       try {
         const result = await this.getByNupi(nupi, accessToken);
         patient = result?.patient ?? undefined;
       } catch {
-        // patient stays undefined
+        // patient stays undefined — still return encounter/facility data
       }
     }
 
@@ -358,7 +306,7 @@ export class PatientService {
       .sort((a, b) => new Date(b.encounterDate).getTime() - new Date(a.encounterDate).getTime());
 
     return {
-      patient,                                          // ← now populated from gateway if not local
+      patient,
       encounters:        allEncounters,
       localEncounters:   localFormatted,
       remoteEncounters,
@@ -371,30 +319,39 @@ export class PatientService {
 
   // ══════════════════════════════════════════════════════════════
   //  RECORD ENCOUNTER
-  //  1. Save full clinical data to local Neon DB
-  //  2. Notify gateway → mints ENCOUNTER_RECORDED block on chain
-  //     so other facilities know this patient was seen here
+  //  Auto-fetches patient from gateway if not in local DB
   // ══════════════════════════════════════════════════════════════
 
   async recordEncounter(data: {
-    nupi:             string;
-    encounterId?:     string;
-    encounterType:    'outpatient' | 'inpatient' | 'emergency' | 'check-in' | 'referral' | 'virtual';
-    encounterDate?:   string;
-    chiefComplaint?:  string;
-    practitionerName?:string;
-    vitalSigns?:      object;
-    diagnoses?:       any[];
-    medications?:     any[];
-    notes?:           string;
+    nupi:              string;
+    accessToken?:      string;   // required if patient not in local DB
+    encounterId?:      string;
+    encounterType:     'outpatient' | 'inpatient' | 'emergency' | 'check-in' | 'referral' | 'virtual';
+    encounterDate?:    string;
+    chiefComplaint?:   string;
+    practitionerName?: string;
+    vitalSigns?:       object;
+    diagnoses?:        any[];
+    medications?:      any[];
+    notes?:            string;
   }) {
-    // Look up the local patient row to get the UUID FK required by encounters.patientId
-    const localPatient = await db.query.patients.findFirst({
+    // ── Ensure patient is in local DB ──────────────────────────
+    let localPatient = await db.query.patients.findFirst({
       where: eq(patients.nupi, data.nupi),
     });
-    if (!localPatient) throw new Error(`Patient ${data.nupi} not in local DB — register or check-in first`);
 
-    // ── Step 1: Save to local Neon DB ──────────────────────────
+    if (!localPatient) {
+      if (!data.accessToken) {
+        throw new Error(`Patient ${data.nupi} not in local DB — verify patient identity first`);
+      }
+      console.log(`⬇️  Patient not local — fetching from gateway: ${data.nupi}`);
+      const result = await this.getByNupi(data.nupi, data.accessToken);
+      if (!result) throw new Error(`Patient ${data.nupi} not found on AfyaNet`);
+      localPatient = result.patient;
+      console.log(`✅ Patient cached locally: ${data.nupi}`);
+    }
+
+    // ── Save encounter to local Neon DB ────────────────────────
     const [encounter] = await db.insert(encounters).values({
       patientId:        localPatient.id,
       patientNupi:      data.nupi,
@@ -410,9 +367,7 @@ export class PatientService {
       status:           'finished',
     }).returning();
 
-    // ── Step 2: Notify blockchain via gateway ──────────────────
-    // This mints ENCOUNTER_RECORDED block so other facilities
-    // know this patient was seen here.
+    // ── Notify blockchain via gateway ──────────────────────────
     try {
       const chainRes = await gateway.post('/api/patients/encounter', {
         nupi:             data.nupi,
@@ -422,12 +377,9 @@ export class PatientService {
         chiefComplaint:   data.chiefComplaint   ?? null,
         practitionerName: data.practitionerName ?? null,
       });
-
       console.log(`⛓  Encounter on chain: Block #${chainRes.data.blockIndex}`);
       return { encounter, blockIndex: chainRes.data.blockIndex };
     } catch (err: any) {
-      // Don't fail the local save if the chain notification fails —
-      // the clinical record is more important. Log and move on.
       console.error('⚠️  Chain notification failed (encounter saved locally):', err.message);
       return { encounter, blockIndex: null, chainError: err.message };
     }
@@ -435,28 +387,25 @@ export class PatientService {
 
   // ══════════════════════════════════════════════════════════════
   //  CHECK-IN
-  //  Registers the patient's visit at this facility.
-  //  If the patient isn't in local DB, pull from gateway first.
+  //  Pulls patient from gateway into local DB then records visit
   // ══════════════════════════════════════════════════════════════
 
   async checkIn(nupi: string, data: {
-    accessToken:      string;  // from verifyIdentity()
+    accessToken:       string;
     practitionerName?: string;
     chiefComplaint?:   string;
   }) {
-    // Ensure patient is in local DB
     let local = await db.query.patients.findFirst({ where: eq(patients.nupi, nupi) });
 
     if (!local) {
-      // Pull from gateway and cache locally
       const result = await this.getByNupi(nupi, data.accessToken);
       if (!result) throw new Error('Patient not found on AfyaNet');
       local = result.patient;
     }
 
-    // Record a check-in encounter on chain
     return this.recordEncounter({
       nupi,
+      accessToken:      data.accessToken,
       encounterType:    'check-in',
       chiefComplaint:   data.chiefComplaint   || undefined,
       practitionerName: data.practitionerName || undefined,
@@ -464,11 +413,11 @@ export class PatientService {
   }
 
   // ══════════════════════════════════════════════════════════════
-  //  REGISTER VISIT  (alias for recordEncounter with visit data)
+  //  REGISTER VISIT
   // ══════════════════════════════════════════════════════════════
 
   async registerVisit(nupi: string, data: {
-    accessToken:       string;
+    accessToken?:      string;
     encounterType?:    'outpatient' | 'inpatient' | 'emergency' | 'check-in' | 'referral' | 'virtual';
     chiefComplaint?:   string;
     practitionerName?: string;
@@ -479,6 +428,7 @@ export class PatientService {
   }) {
     return this.recordEncounter({
       nupi,
+      accessToken:      data.accessToken      || undefined,
       encounterType:    data.encounterType    ?? 'outpatient',
       chiefComplaint:   data.chiefComplaint   || undefined,
       practitionerName: data.practitionerName || undefined,
@@ -494,14 +444,11 @@ export const patientService = new PatientService();
 
 
 // ── Keep-alive ping ───────────────────────────────────────────────
-// Render free tier spins down after 15 min inactivity.
-// Ping the gateway every 10 minutes so it stays warm.
-// Call startGatewayKeepAlive() once in your app entry point (server.ts / index.ts).
 
 export function startGatewayKeepAlive() {
   if (process.env.NODE_ENV !== 'production') return;
 
-  const INTERVAL = 10 * 60 * 1000; // 10 minutes
+  const INTERVAL = 10 * 60 * 1000;
 
   setInterval(async () => {
     try {
