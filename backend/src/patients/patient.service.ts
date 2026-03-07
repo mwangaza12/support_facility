@@ -131,36 +131,26 @@ export class PatientService {
     });
     if (local) return { patient: local, source: 'local' };
 
-    if (!accessToken) return null;
-
     try {
-      const res = await gateway.get(`/api/fhir/Patient/${nupi}`, {
-        headers: { Authorization: `Bearer ${accessToken}` },
-      });
-
-      const fhir = res.data;
-      if (!fhir || fhir.resourceType !== 'Patient') return null;
-
-      const name    = fhir.name?.[0];
-      const telecom = fhir.telecom || [];
-      const addr    = fhir.address?.[0];
+      // Use patient history endpoint — requires only facility credentials (X-Facility-Id + X-Api-Key),
+      // NOT the patient access token. This avoids the 401 from the FHIR endpoint.
+      const historyRes   = await gateway.get(`/api/patients/${nupi}/history`);
+      const chainPatient = historyRes.data?.patient || {};
+      const nameParts    = (chainPatient.name || '').trim().split(' ');
 
       const [patient] = await db.insert(patients).values({
         nupi,
-        firstName:         name?.given?.[0]  || 'Unknown',
-        lastName:          name?.family       || 'Unknown',
-        middleName:        name?.given?.[1]   ?? null,
-        dateOfBirth:       fhir.birthDate ? new Date(fhir.birthDate) : new Date('1900-01-01'),
-        gender:            (fhir.gender || 'unknown') as 'male' | 'female' | 'other' | 'unknown',
-        phoneNumber:       telecom.find((t: any) => t.system === 'phone')?.value ?? null,
-        email:             telecom.find((t: any) => t.system === 'email')?.value ?? null,
-        address:           addr ? { county: addr.state, subCounty: addr.district, ward: addr.city } : null,
+        firstName:         nameParts[0]                 || 'Unknown',
+        lastName:          nameParts.slice(1).join(' ') || 'Unknown',
+        dateOfBirth:       chainPatient.dob ? new Date(chainPatient.dob) : new Date('1900-01-01'),
+        gender:            'unknown' as 'male' | 'female' | 'other' | 'unknown',
         isFederatedRecord: true,
       }).returning();
 
+      console.log(`✅ Patient cached from chain history: ${nupi}`);
       return { patient, source: 'gateway' };
     } catch (err: any) {
-      console.error('getByNupi gateway error:', err.response?.status, err.response?.data);
+      console.error('getByNupi error:', err.response?.status, err.response?.data?.message || err.message);
       if (err.response?.status === 404) return null;
       throw err;
     }
