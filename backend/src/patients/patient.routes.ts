@@ -74,7 +74,7 @@ router.get('/nupi/:nupi', patientController.getByNupi.bind(patientController));
 // POST /patients/nupi/NUPI-7A3F.../checkin
 // Headers: Authorization: Bearer <token>
 // Body: { practitionerName?, chiefComplaint? }
-router.post('/nupi/:nupi/checkin', patientController.checkIn.bind(patientController));
+router.post('/:nupi/checkin', patientController.checkIn.bind(patientController));
 
 // ── Encounters ────────────────────────────────────────────────────
 
