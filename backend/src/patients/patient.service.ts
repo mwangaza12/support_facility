@@ -160,6 +160,7 @@ export class PatientService {
 
       return { patient, source: 'gateway' };
     } catch (err: any) {
+      console.error('getByNupi gateway error:', err.response?.status, err.response?.data);
       if (err.response?.status === 404) return null;
       throw err;
     }
