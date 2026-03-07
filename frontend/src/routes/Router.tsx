@@ -1,9 +1,10 @@
 import { createBrowserRouter, Outlet } from 'react-router-dom';
 import LoginPage         from '@/pages/auth/Login';
 import { Dashboard }     from '@/pages/dashboard/Dashboard';
+import { Referrals }     from '@/pages/referrals/Referrals';
 import { Patients }      from '@/pages/patients/Patients';
-import { PatientDetail }  from '@/pages/patients/PatientDetail';
-import { RecordEncounter } from '@/pages/patients/RecordEncounter';
+import { PatientDetail } from '@/pages/patients/PatientDetail';
+import { RecordEncounter}from '@/pages/patients/RecordEncounter';
 import { AdminPanel }    from '@/pages/admin/AdminPanel';
 import { StaffManagement}from '@/pages/admin/StaffManagement';
 import Error             from '@/pages/error/Error';
@@ -37,9 +38,17 @@ export const Router = createBrowserRouter([
           {
             element: <ProtectedRoute allowedRoles={['doctor', 'nurse', 'receptionist']} />,
             children: [
-              { path: 'patients',                        element: <Patients />       },
-              { path: 'patients/:nupi',                  element: <PatientDetail />  },
-              { path: 'patients/:nupi/encounter',        element: <RecordEncounter />},
+              { path: 'patients',                 element: <Patients />        },
+              { path: 'patients/:nupi',           element: <PatientDetail />   },
+              { path: 'patients/:nupi/encounter', element: <RecordEncounter /> },
+            ],
+          },
+
+          // Referrals — doctors and nurses
+          {
+            element: <ProtectedRoute allowedRoles={['doctor', 'nurse']} />,
+            children: [
+              { path: 'referrals', element: <Referrals /> },
             ],
           },
 
@@ -47,8 +56,8 @@ export const Router = createBrowserRouter([
           {
             element: <ProtectedRoute allowedRoles={['admin']} />,
             children: [
-              { path: 'admin', element: <AdminPanel />     },
-              { path: 'staff', element: <StaffManagement />},
+              { path: 'admin', element: <AdminPanel />      },
+              { path: 'staff', element: <StaffManagement /> },
             ],
           },
         ],

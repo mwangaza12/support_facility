@@ -2,15 +2,16 @@ import { NavLink, Outlet, useNavigate } from 'react-router-dom';
 import { useAuthStore } from '@/stores/auth.store';
 import {
   LayoutDashboard, Users, UserCog, LogOut,
-  Activity, Menu, X, ChevronRight, Shield
+  Activity, Menu, X, ChevronRight, Shield, ArrowRightLeft
 } from 'lucide-react';
 import { useState } from 'react';
 
 const navItems = [
-  { to: '/dashboard', icon: LayoutDashboard, label: 'Dashboard',        roles: ['doctor','nurse','receptionist','admin','pharmacist','lab_technician'] },
-  { to: '/patients',  icon: Users,           label: 'Patients',          roles: ['doctor','nurse','receptionist'] },
-  { to: '/admin',     icon: Shield,          label: 'Admin Panel',       roles: ['admin'] },
-  { to: '/staff',     icon: UserCog,         label: 'Staff Management',  roles: ['admin'] },
+  { to: '/dashboard',  icon: LayoutDashboard,  label: 'Dashboard',        roles: ['doctor','nurse','receptionist','admin','pharmacist','lab_technician'] },
+  { to: '/patients',   icon: Users,            label: 'Patients',          roles: ['doctor','nurse','receptionist'] },
+  { to: '/referrals',  icon: ArrowRightLeft,   label: 'Referrals',         roles: ['doctor','nurse'] },
+  { to: '/admin',      icon: Shield,           label: 'Admin Panel',       roles: ['admin'] },
+  { to: '/staff',      icon: UserCog,          label: 'Staff Management',  roles: ['admin'] },
 ];
 
 export default function AppLayout() {
