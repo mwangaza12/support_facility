@@ -1,6 +1,8 @@
 import { create } from 'zustand';
 import { patientApi } from '../api/patient.api';
 
+const TOKEN_KEY = 'afyalink_patient_token';
+
 export interface Patient {
   id:          string;
   nupi:        string;
@@ -48,7 +50,7 @@ interface PatientState {
   accessToken:       string | null;
   facilitiesVisited: any[];
   isLoadingPatient:  boolean;
-  isCheckedIn:       boolean;   // true once patient exists in local DB
+  isCheckedIn:       boolean;
 
   // UI
   error: string | null;
@@ -62,13 +64,29 @@ interface PatientState {
   clearError:    () => void;
 }
 
+// ── Helpers ───────────────────────────────────────────────────────
+
+function saveToken(token: string) {
+  try { sessionStorage.setItem(TOKEN_KEY, token); } catch {}
+}
+
+function loadToken(): string | null {
+  try { return sessionStorage.getItem(TOKEN_KEY); } catch { return null; }
+}
+
+function clearToken() {
+  try { sessionStorage.removeItem(TOKEN_KEY); } catch {}
+}
+
+// ─────────────────────────────────────────────────────────────────
+
 export const usePatientStore = create<PatientState>((set, get) => ({
   searchResults:     [],
   searchQuery:       '',
   isSearching:       false,
   currentPatient:    null,
   encounters:        [],
-  accessToken:       null,
+  accessToken:       loadToken(),   // ← hydrate from sessionStorage on init
   facilitiesVisited: [],
   isLoadingPatient:  false,
   isCheckedIn:       false,
@@ -88,6 +106,7 @@ export const usePatientStore = create<PatientState>((set, get) => ({
   verifyPatient: async (nationalId, dob, answer) => {
     const res  = await patientApi.verifyAnswer({ nationalId, dob, answer });
     const data = res.data || res;
+    saveToken(data.token);   // ← persist so it survives navigation
     set({
       accessToken:       data.token,
       facilitiesVisited: data.facilitiesVisited || [],
@@ -99,6 +118,7 @@ export const usePatientStore = create<PatientState>((set, get) => ({
   verifyByPin: async (nationalId, dob, pin) => {
     const res  = await patientApi.verifyPin({ nationalId, dob, pin });
     const data = res.data || res;
+    saveToken(data.token);   // ← persist
     set({
       accessToken:       data.token,
       facilitiesVisited: data.facilitiesVisited || [],
@@ -108,24 +128,24 @@ export const usePatientStore = create<PatientState>((set, get) => ({
   },
 
   loadPatient: async (nupi) => {
-    const { accessToken } = get();
+    // Hydrate token from sessionStorage if store lost it (e.g. hot reload)
+    const storedToken = loadToken();
+    const accessToken = get().accessToken || storedToken || '';
+    if (storedToken && !get().accessToken) set({ accessToken: storedToken });
+
     set({ isLoadingPatient: true, error: null });
     try {
       // ── Step 1: Silent check-in ──────────────────────────────
-      // This calls the backend which pulls patient from gateway
-      // and caches them in the local DB if not already there.
-      // After this, recordEncounter will always find them locally.
       let checkedIn = false;
       try {
-        await patientApi.checkIn(nupi, accessToken || '');
+        await patientApi.checkIn(nupi, accessToken);
         checkedIn = true;
       } catch {
-        // Check-in may fail if patient is already local — that's fine
-        checkedIn = true;
+        checkedIn = true; // already local — fine
       }
 
       // ── Step 2: Load federated data ──────────────────────────
-      const res  = await patientApi.getFederatedData(nupi, accessToken || '');
+      const res  = await patientApi.getFederatedData(nupi, accessToken);
       const data = res.data;
 
       set({
@@ -140,10 +160,13 @@ export const usePatientStore = create<PatientState>((set, get) => ({
     }
   },
 
-  clearPatient: () => set({
-    currentPatient: null, encounters: [], accessToken: null,
-    facilitiesVisited: [], isCheckedIn: false,
-  }),
+  clearPatient: () => {
+    clearToken();   // ← clear token on patient clear
+    set({
+      currentPatient: null, encounters: [], accessToken: null,
+      facilitiesVisited: [], isCheckedIn: false,
+    });
+  },
 
   clearError: () => set({ error: null }),
 }));
