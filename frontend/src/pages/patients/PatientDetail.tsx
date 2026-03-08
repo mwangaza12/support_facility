@@ -49,8 +49,11 @@ export const PatientDetail = () => {
     : p.name || p.nupi;
 
   const dob      = p.dateOfBirth ? new Date(p.dateOfBirth) : null;
-  const age      = dob ? Math.floor((Date.now() - dob.getTime()) / 3.156e10) : null;
+  // Guard against garbage 1900 placeholder dates from thin blockchain records
+  const dobValid = dob && dob.getFullYear() > 1900;
+  const age      = dobValid ? Math.floor((Date.now() - dob!.getTime()) / 3.156e10) : null;
   const isActive = p.active !== false;
+  const isGhostRecord = p.isFederatedRecord && !dobValid && !p.phoneNumber && !p.nationalId;
 
   return (
     <div className="space-y-6 max-w-5xl">
@@ -91,12 +94,22 @@ export const PatientDetail = () => {
             <h2 className="text-xs font-semibold text-slate-500 uppercase tracking-wide">
               Demographics
             </h2>
-            <div className="space-y-2 text-sm">
-              <Row label="Age"         value={age !== null ? `${age} years` : '—'} />
-              <Row label="DOB"         value={dob ? dob.toLocaleDateString('en-KE') : '—'} />
-              <Row label="National ID" value={p.nationalId || '—'} />
-              <Row label="Blood Group" value={p.bloodGroup || '—'} />
-            </div>
+            {isGhostRecord ? (
+              <div className="bg-amber-50 border border-amber-100 rounded-lg px-3 py-2.5 text-xs text-amber-700 space-y-1">
+                <p className="font-medium">Demographics unavailable</p>
+                <p className="text-amber-600 leading-relaxed">
+                  This patient's full record is held at their registered facility.
+                  Verify their identity to load demographics.
+                </p>
+              </div>
+            ) : (
+              <div className="space-y-2 text-sm">
+                <Row label="Age"         value={age !== null ? `${age} years` : '—'} />
+                <Row label="DOB"         value={dobValid ? dob!.toLocaleDateString('en-KE') : '—'} />
+                <Row label="National ID" value={p.nationalId || '—'} />
+                <Row label="Blood Group" value={p.bloodGroup || '—'} />
+              </div>
+            )}
           </div>
 
           {/* Contact */}

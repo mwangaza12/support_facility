@@ -4,7 +4,7 @@ import { useAuthStore }        from '@/stores/auth.store';
 import { apiClient }           from '@/api/auth.api';
 import {
   Users, ClipboardList, Activity, ArrowRightLeft,
-  UserPlus, PlusCircle, ChevronRight, Loader2,
+  UserPlus, ChevronRight, Loader2,
   ScanFace, AlertCircle, RefreshCw,
 } from 'lucide-react';
 

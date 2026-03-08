@@ -10,6 +10,7 @@ export interface AuthUser {
   lastName:   string;
   role:       UserRole;
   facilityId: string;
+  facilityName: string;
 }
 
 interface AuthState {
