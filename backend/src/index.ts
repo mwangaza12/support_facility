@@ -47,6 +47,7 @@ app.get('/api/facilities', async (_req, res) => {
   try {
     const gatewayUrl = process.env.HIE_GATEWAY_URL || 'http://localhost:5000';
     const response   = await axios.get(`${gatewayUrl}/api/facilities`, { timeout: 15000 });
+    console.log(response);
     res.json(response.data);
   } catch (err: any) {
     console.warn('⚠️  Could not fetch facilities from gateway:', err.message);
