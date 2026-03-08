@@ -6,6 +6,16 @@ class PatientController {
   // ── Registration ──────────────────────────────────────────────
 
   async create(req: Request, res: Response) {
+    // Validate required fields before calling service, so the error message
+    // is clear to the caller rather than surfacing as a gateway 400.
+    const { nationalId, firstName, lastName, dateOfBirth, securityQuestion, securityAnswer, pin } = req.body;
+    if (!nationalId || !firstName || !lastName || !dateOfBirth || !securityQuestion || !securityAnswer || !pin) {
+      return res.status(400).json({
+        success: false,
+        error:   'nationalId, firstName, lastName, dateOfBirth, securityQuestion, securityAnswer and pin are required',
+      });
+    }
+
     try {
       const result = await patientService.create(req.body);
       return res.status(result.alreadyExists ? 200 : 201).json({
@@ -15,7 +25,17 @@ class PatientController {
       });
     } catch (error: any) {
       console.error('create error:', error.message);
-      return res.status(500).json({ success: false, error: error.message });
+
+      // FIX: propagate the upstream gateway error body if present, so the caller
+      // sees e.g. "PIN must be 4–6 digits" rather than the opaque axios message
+      // "Request failed with status code 400".
+      const upstreamError: string =
+        error.response?.data?.error ||
+        error.response?.data?.message ||
+        error.message;
+
+      const status = error.response?.status === 400 ? 400 : 500;
+      return res.status(status).json({ success: false, error: upstreamError });
     }
   }
 
@@ -64,7 +84,8 @@ class PatientController {
       const result = await patientService.getSecurityQuestion(nationalId, dob);
       return res.json({ success: true, ...result });
     } catch (error: any) {
-      return res.status(500).json({ success: false, error: error.message });
+      const upstreamError = error.response?.data?.error || error.message;
+      return res.status(error.response?.status || 500).json({ success: false, error: upstreamError });
     }
   }
 
@@ -77,7 +98,8 @@ class PatientController {
       const result = await patientService.verifyIdentity({ nationalId, dob, answer });
       return res.json({ success: true, data: result });
     } catch (error: any) {
-      return res.status(401).json({ success: false, error: error.message });
+      const upstreamError = error.response?.data?.error || error.message;
+      return res.status(error.response?.status || 401).json({ success: false, error: upstreamError });
     }
   }
 
@@ -90,7 +112,8 @@ class PatientController {
       const result = await patientService.verifyByPin({ nationalId, dob, pin });
       return res.json({ success: true, data: result });
     } catch (error: any) {
-      return res.status(401).json({ success: false, error: error.message });
+      const upstreamError = error.response?.data?.error || error.message;
+      return res.status(error.response?.status || 401).json({ success: false, error: upstreamError });
     }
   }
 
@@ -122,11 +145,11 @@ class PatientController {
       const accessToken = req.headers.authorization?.replace('Bearer ', '') || '';
       const result      = await patientService.getFederatedPatientData(String(nupi), accessToken);
       return res.json({
-        success:          true,
-        data:             result,
-        totalEncounters:  result.totalEncounters,
-        facilitiesVisited:result.facilitiesVisited.length,
-        message:          `Found ${result.totalEncounters} encounters across ${result.facilitiesVisited.length} facilities`,
+        success:           true,
+        data:              result,
+        totalEncounters:   result.totalEncounters,
+        facilitiesVisited: result.facilitiesVisited.length,
+        message:           `Found ${result.totalEncounters} encounters across ${result.facilitiesVisited.length} facilities`,
       });
     } catch (error: any) {
       return res.status(500).json({ success: false, error: error.message });
@@ -177,12 +200,13 @@ class PatientController {
       const { nupi }    = req.params;
       const accessToken = req.headers.authorization?.replace('Bearer ', '') || '';
       const result      = await patientService.registerVisit(String(nupi), {
-        accessToken,   // ← passed through so recordEncounter can auto-fetch patient
+        accessToken,
         ...req.body,
       });
       return res.json({ success: true, data: result });
     } catch (error: any) {
-      return res.status(500).json({ success: false, error: error.message });
+      const upstreamError = error.response?.data?.error || error.message;
+      return res.status(error.response?.status || 500).json({ success: false, error: upstreamError });
     }
   }
 }
