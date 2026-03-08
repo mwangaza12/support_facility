@@ -1,7 +1,7 @@
-import { eq, desc } from 'drizzle-orm';
+import { eq, desc, sql } from 'drizzle-orm';
 import axios, { AxiosInstance } from 'axios';
 import db from '../db/db';
-import { referrals } from '../db/schema';
+import { referrals, patients } from '../db/schema';
 
 function createGatewayClient(): AxiosInstance {
   return axios.create({
@@ -122,13 +122,38 @@ export class ReferralService {
   //  GET OUTGOING — sync first, then query local DB
   // ══════════════════════════════════════════════════════════════
 
+  // ══════════════════════════════════════════════════════════════
+  //  ENRICH WITH PATIENT NAMES
+  //  Joins local patients table. Falls back to NUPI for unknown patients
+  //  (cross-facility incoming where patient not registered locally yet).
+  // ══════════════════════════════════════════════════════════════
+
+  private async enrichWithPatientNames(rows: any[]): Promise<any[]> {
+    if (!rows.length) return rows;
+    // Collect unique NUPIs
+    const nupis = [...new Set(rows.map(r => r.patientNupi).filter(Boolean))];
+    // Fetch matching local patients in one query
+    const localPatients = nupis.length
+      ? await db.query.patients.findMany({
+          where: (p, { inArray }) => inArray(p.nupi, nupis),
+          columns: { nupi: true, firstName: true, lastName: true },
+        })
+      : [];
+    const nameMap = new Map(localPatients.map(p => [p.nupi, `${p.firstName} ${p.lastName}`.trim()]));
+    return rows.map(r => ({
+      ...r,
+      patientName: nameMap.get(r.patientNupi) || null, // null = not registered locally
+    }));
+  }
+
   async getOutgoing() {
     await this.syncFromGateway();
     const facilityId = process.env.FACILITY_ID || '';
-    return db.query.referrals.findMany({
+    const rows = await db.query.referrals.findMany({
       where:   eq(referrals.fromFacilityId, facilityId),
       orderBy: [desc(referrals.createdAt)],
     });
+    return this.enrichWithPatientNames(rows);
   }
 
   // ══════════════════════════════════════════════════════════════
@@ -138,10 +163,11 @@ export class ReferralService {
   async getIncoming() {
     await this.syncFromGateway();
     const facilityId = process.env.FACILITY_ID || '';
-    return db.query.referrals.findMany({
+    const rows = await db.query.referrals.findMany({
       where:   eq(referrals.toFacilityId, facilityId),
       orderBy: [desc(referrals.createdAt)],
     });
+    return this.enrichWithPatientNames(rows);
   }
 
   // ══════════════════════════════════════════════════════════════

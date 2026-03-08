@@ -157,6 +157,12 @@ export class PatientService {
       throw err;
     }
   }
+  
+  async getAll() {
+    return db.query.patients.findMany({
+      orderBy: (patients, { desc }) => [desc(patients.createdAt)],
+    });
+  }
 
   // ══════════════════════════════════════════════════════════════
   //  SEARCH

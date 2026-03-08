@@ -41,6 +41,15 @@ class PatientController {
 
   // ── Lookup ────────────────────────────────────────────────────
 
+  async getAll(req: Request, res: Response) {
+    try {
+      const patients = await patientService.getAll();
+      return res.json({ success: true, data: patients });
+    } catch (error: any) {
+      return res.status(500).json({ success: false, error: error.message });
+    }
+  }
+
   async getById(req: Request, res: Response) {
     try {
       const patient = await patientService.getById(String(req.params.id));

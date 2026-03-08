@@ -5,6 +5,9 @@ const router = Router();
 
 // ── Static / specific routes FIRST (before any /:nupi wildcards) ──
 
+// List all local patients
+router.get('/', patientController.getAll.bind(patientController));
+
 // Registration
 router.post('/', patientController.create.bind(patientController));
 
