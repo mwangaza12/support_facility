@@ -73,6 +73,9 @@ export class PatientService {
     const nupiRes = await gateway.get('/api/patients/nupi', {
       params: { nationalId: data.nationalId, dob: data.dateOfBirth },
     });
+
+    console.log(nupiRes)
+    
     const nupi: string = nupiRes.data.nupi;
 
     const existing = await db.query.patients.findFirst({
