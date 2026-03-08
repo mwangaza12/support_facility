@@ -50,7 +50,6 @@ interface PatientState {
   accessToken:       string | null;
   facilitiesVisited: any[];
   isLoadingPatient:  boolean;
-  isCheckedIn:       boolean;
 
   // UI
   error: string | null;
@@ -89,7 +88,6 @@ export const usePatientStore = create<PatientState>((set, get) => ({
   accessToken:       loadToken(),   // ← hydrate from sessionStorage on init
   facilitiesVisited: [],
   isLoadingPatient:  false,
-  isCheckedIn:       false,
   error:             null,
 
   search: async (query) => {
@@ -135,16 +133,6 @@ export const usePatientStore = create<PatientState>((set, get) => ({
 
     set({ isLoadingPatient: true, error: null });
     try {
-      // ── Step 1: Silent check-in ──────────────────────────────
-      let checkedIn = false;
-      try {
-        await patientApi.checkIn(nupi, accessToken);
-        checkedIn = true;
-      } catch {
-        checkedIn = true; // already local — fine
-      }
-
-      // ── Step 2: Load federated data ──────────────────────────
       const res  = await patientApi.getFederatedData(nupi, accessToken);
       const data = res.data;
 
@@ -153,7 +141,6 @@ export const usePatientStore = create<PatientState>((set, get) => ({
         encounters:        data?.encounters || data?.localEncounters || [],
         facilitiesVisited: data?.facilitiesVisited || get().facilitiesVisited,
         isLoadingPatient:  false,
-        isCheckedIn:       checkedIn,
       });
     } catch (err: any) {
       set({ isLoadingPatient: false, error: err.message });
@@ -164,7 +151,7 @@ export const usePatientStore = create<PatientState>((set, get) => ({
     clearToken();   // ← clear token on patient clear
     set({
       currentPatient: null, encounters: [], accessToken: null,
-      facilitiesVisited: [], isCheckedIn: false,
+      facilitiesVisited: [],
     });
   },
 

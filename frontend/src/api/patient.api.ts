@@ -3,6 +3,12 @@ import { apiClient } from './auth.api';
 // ── Patient API ───────────────────────────────────────────────────
 
 export const patientApi = {
+
+  getAll: async () => {
+    const res = await apiClient.get('/patients');
+    return res.data;
+  },
+
   search: async (query: string) => {
     const res = await apiClient.get('/patients/search/nupi', { params: { query } });
     return res.data;
@@ -64,13 +70,6 @@ export const patientApi = {
     return res.data;
   },
 
-  // Silent check-in — caches patient in local DB from gateway
-  checkIn: async (nupi: string, accessToken: string) => {
-    const res = await apiClient.post(`/patients/${nupi}/checkin`, {}, {
-      headers: { Authorization: `Bearer ${accessToken}` },
-    });
-    return res.data;
-  },
 };
 
 // ── Staff API ─────────────────────────────────────────────────────

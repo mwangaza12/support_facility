@@ -190,9 +190,15 @@ const ReferralDetail = ({ referral, onClose, isIncoming }: {
             <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide">Patient</p>
             <div className="flex items-center gap-2">
               <User size={14} className="text-slate-400" />
-              <span className="text-sm font-medium text-slate-800">{referral.patientName || 'Unknown'}</span>
+              <span className="text-sm font-medium text-slate-800">
+                {referral.patientName || (
+                  <span className="text-slate-400 font-mono text-xs">{referral.patientNupi}</span>
+                )}
+              </span>
             </div>
-            <p className="text-xs text-slate-400 font-mono ml-5">{referral.patientNupi}</p>
+            {referral.patientName && (
+              <p className="text-xs text-slate-400 font-mono ml-5">{referral.patientNupi}</p>
+            )}
           </div>
           <div className="grid grid-cols-2 gap-3">
             <div className="bg-slate-50 rounded-xl p-4 space-y-1">
@@ -285,12 +291,19 @@ const ReferralRow = ({ referral, isIncoming, onClick }: {
       <div className="flex-1 min-w-0">
         <div className="flex items-center gap-2 mb-0.5 flex-wrap">
           <span className="text-sm font-medium text-slate-800 truncate">
-            {isIncoming ? referral.fromFacilityName || referral.fromFacilityId
-                        : referral.toFacilityName   || referral.toFacilityId}
+            {referral.patientName || (
+              <span className="font-mono text-slate-500 text-xs">
+                {referral.patientNupi?.slice(0, 20)}…
+              </span>
+            )}
           </span>
           {badge(referral.urgency, URGENCY_COLOR[referral.urgency] || '')}
         </div>
-        <p className="text-xs text-slate-500 truncate">{referral.reason}</p>
+        <p className="text-xs text-slate-500 truncate">
+          {isIncoming
+            ? `From: ${referral.fromFacilityName || referral.fromFacilityId}`
+            : `To: ${referral.toFacilityName || referral.toFacilityId}`}
+        </p>
         <p className="text-xs text-slate-400 mt-0.5">{fmt(referral.createdAt)}</p>
       </div>
       <div className="flex items-center gap-2 shrink-0">
