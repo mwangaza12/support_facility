@@ -9,6 +9,12 @@ export const patientApi = {
     return res.data;
   },
 
+  // Plain NUPI lookup on AfyaNet — no verification, returns name + registered facility only
+  lookupByNupi: async (nupi: string) => {
+    const res = await apiClient.get(`/patients/lookup/${nupi}`);
+    return res.data;
+  },
+
   search: async (query: string) => {
     const res = await apiClient.get('/patients/search/nupi', { params: { query } });
     return res.data;

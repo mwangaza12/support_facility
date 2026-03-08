@@ -1,10 +1,14 @@
 import { useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { usePatientStore } from '@/stores/patient.store';
+import { useState } from 'react';
+import { patientApi } from '@/api/patient.api';
 import {
   ArrowLeft, MapPin, Phone, Calendar, Activity,
-  ClipboardList, Building2, Loader2, PlusCircle, UserCircle
+  ClipboardList, Building2, Loader2, PlusCircle, UserCircle,
+  ShieldCheck, AlertCircle, Lock,
 } from 'lucide-react';
+import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 
 const badge = (label: string, color: string) => (
@@ -16,8 +20,40 @@ export const PatientDetail = () => {
   const navigate       = useNavigate();
   const {
     currentPatient, encounters, facilitiesVisited,
-    isLoadingPatient, loadPatient,
+    isLoadingPatient, loadPatient, accessToken, verifyPatient,
   } = usePatientStore();
+
+  // Identity verification for cross-facility patients
+  const [verifyStep,    setVerifyStep]    = useState<'idle' | 'question' | 'done'>('idle');
+  const [question,      setQuestion]      = useState('');
+  const [answer,        setAnswer]        = useState('');
+  const [verifyLoading, setVerifyLoading] = useState(false);
+  const [verifyError,   setVerifyError]   = useState('');
+  const [verifyNationalId, setVerifyNationalId] = useState('');
+  const [verifyDob,     setVerifyDob]     = useState('');
+
+  const handleGetQuestion = async () => {
+    if (!verifyNationalId || !verifyDob) return;
+    setVerifyLoading(true); setVerifyError('');
+    try {
+      const res = await patientApi.getSecurityQuestion(verifyNationalId, verifyDob);
+      setQuestion(res.data?.question || res.question);
+      setVerifyStep('question');
+    } catch (err: any) {
+      setVerifyError(err.response?.data?.error || err.message);
+    } finally { setVerifyLoading(false); }
+  };
+
+  const handleVerify = async () => {
+    setVerifyLoading(true); setVerifyError('');
+    try {
+      await verifyPatient(verifyNationalId, verifyDob, answer);
+      setVerifyStep('done');
+      if (nupi) loadPatient(nupi); // reload with token
+    } catch (err: any) {
+      setVerifyError(err.response?.data?.error || err.message);
+    } finally { setVerifyLoading(false); }
+  };
 
   useEffect(() => {
     if (nupi) loadPatient(nupi);
@@ -81,8 +117,17 @@ export const PatientDetail = () => {
 
         <Button
           className="bg-teal-600 hover:bg-teal-700 text-white gap-2 shrink-0"
-          onClick={() => navigate(`/patients/${nupi}/encounter`)}>
-          <PlusCircle size={15} /> Record Visit
+          onClick={() => {
+            if (p.isFederatedRecord && !accessToken) {
+              setVerifyStep('idle');
+              document.getElementById('verify-section')?.scrollIntoView({ behavior: 'smooth' });
+            } else {
+              navigate(`/patients/${nupi}/encounter`);
+            }
+          }}>
+          {p.isFederatedRecord && !accessToken
+            ? <><Lock size={14} /> Verify to Create Encounter</>
+            : <><PlusCircle size={15} /> Create Encounter</>}
         </Button>
       </div>
 
@@ -154,6 +199,67 @@ export const PatientDetail = () => {
             </div>
           )}
         </div>
+
+        {/* ── Verify identity section (federated patients only) ── */}
+        {p.isFederatedRecord && !accessToken && (
+          <div id="verify-section" className="md:col-span-2">
+            <div className="bg-white rounded-xl border border-amber-200 p-5 shadow-sm space-y-4">
+              <div className="flex items-center gap-2">
+                <ShieldCheck size={16} className="text-amber-500" />
+                <h2 className="text-sm font-semibold text-slate-700">Verify Patient Identity</h2>
+              </div>
+              <p className="text-xs text-slate-500">
+                This patient is registered at another facility. Verify their identity to access full records and create an encounter.
+              </p>
+
+              {verifyStep === 'idle' && (
+                <div className="space-y-3">
+                  <div className="grid grid-cols-2 gap-3">
+                    <div className="space-y-1">
+                      <label className="text-xs font-medium text-slate-600">National ID</label>
+                      <Input placeholder="National ID" value={verifyNationalId} onChange={e => setVerifyNationalId(e.target.value)} />
+                    </div>
+                    <div className="space-y-1">
+                      <label className="text-xs font-medium text-slate-600">Date of Birth</label>
+                      <Input type="date" value={verifyDob} onChange={e => setVerifyDob(e.target.value)} />
+                    </div>
+                  </div>
+                  <Button className="bg-amber-500 hover:bg-amber-600 text-white w-full"
+                    onClick={handleGetQuestion} disabled={verifyLoading || !verifyNationalId || !verifyDob}>
+                    {verifyLoading ? <Loader2 size={14} className="animate-spin mr-2" /> : null}
+                    Get Security Question
+                  </Button>
+                </div>
+              )}
+
+              {verifyStep === 'question' && (
+                <div className="space-y-3">
+                  <div className="bg-amber-50 border border-amber-100 rounded-lg px-4 py-3">
+                    <p className="text-xs font-medium text-amber-600 mb-1">Security Question</p>
+                    <p className="text-sm text-slate-800">{question}</p>
+                  </div>
+                  <Input placeholder="Answer" value={answer} onChange={e => setAnswer(e.target.value)}
+                    onKeyDown={e => e.key === 'Enter' && !verifyLoading && answer && handleVerify()} />
+                  <div className="flex gap-2">
+                    <Button variant="outline" className="flex-1"
+                      onClick={() => { setVerifyStep('idle'); setVerifyError(''); }}>Back</Button>
+                    <Button className="flex-1 bg-amber-500 hover:bg-amber-600 text-white"
+                      onClick={handleVerify} disabled={verifyLoading || !answer}>
+                      {verifyLoading ? <Loader2 size={14} className="animate-spin mr-2" /> : null}
+                      Confirm Identity
+                    </Button>
+                  </div>
+                </div>
+              )}
+
+              {verifyError && (
+                <p className="text-xs text-red-500 flex items-center gap-1.5">
+                  <AlertCircle size={12} /> {verifyError}
+                </p>
+              )}
+            </div>
+          </div>
+        )}
 
         {/* ── Encounters ────────────────────────────────────────── */}
         <div className="md:col-span-2">
