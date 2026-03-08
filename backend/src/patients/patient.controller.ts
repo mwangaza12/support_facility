@@ -41,6 +41,19 @@ class PatientController {
 
   // ── Lookup ────────────────────────────────────────────────────
 
+  // Plain chain lookup — no patient token, returns name + registered facility only
+  async chainLookup(req: Request, res: Response) {
+    try {
+      const { nupi } = req.params;
+      const res2 = await (patientService as any).chainLookup(nupi);
+      if (!res2) return res.status(404).json({ success: false, error: 'Patient not found on AfyaNet' });
+      return res.json({ success: true, ...res2 });
+    } catch (error: any) {
+      const upstreamError = error.response?.data?.error || error.message;
+      return res.status(error.response?.status || 500).json({ success: false, error: upstreamError });
+    }
+  }
+
   async getAll(req: Request, res: Response) {
     try {
       const patients = await patientService.getAll();

@@ -222,15 +222,6 @@ export class PatientService {
   }
 
   // ══════════════════════════════════════════════════════════════
-  //  LIST ALL LOCAL PATIENTS
-  // ══════════════════════════════════════════════════════════════
-
-  async getAll() {
-    return db.query.patients.findMany({
-      orderBy: (patients, { desc }) => [desc(patients.createdAt)],
-    });
-  }
-  // ══════════════════════════════════════════════════════════════
   //  SEARCH
   // ══════════════════════════════════════════════════════════════
 
@@ -328,6 +319,26 @@ export class PatientService {
       ?.map((e: any) => e.resource)
       .filter((r: any) => r?.resourceType === 'Encounter') || [];
     return { bundle, encounters: encounterList };
+  }
+
+  // ══════════════════════════════════════════════════════════════
+  //  PLAIN CHAIN LOOKUP — no access token, returns name + facility
+  //  Does NOT write anything to the local DB
+  // ══════════════════════════════════════════════════════════════
+
+  async chainLookup(nupi: string) {
+    const res = await gateway.get(`/api/patients/${nupi}`);
+    return res.data; // { nupi, patient: { name, registeredAtFacility, ... } }
+  }
+
+  // ══════════════════════════════════════════════════════════════
+  //  LIST ALL LOCAL PATIENTS
+  // ══════════════════════════════════════════════════════════════
+
+  async getAll() {
+    return db.query.patients.findMany({
+      orderBy: (patients, { desc }) => [desc(patients.createdAt)],
+    });
   }
 
   // ══════════════════════════════════════════════════════════════

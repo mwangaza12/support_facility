@@ -25,6 +25,9 @@ router.post('/verify/pin',     patientController.verifyPin.bind(patientControlle
 // NUPI lookup (static prefix keeps it above /:nupi)
 router.get('/nupi/:nupi', patientController.getByNupi.bind(patientController));
 
+// Plain AfyaNet chain lookup — no patient token needed, returns name + facility only
+router.get('/lookup/:nupi', patientController.chainLookup.bind(patientController));
+
 // ── Wildcard /:nupi routes AFTER all static routes ────────────────
 
 // Check-in
