@@ -130,40 +130,106 @@ export class PatientService {
   // ══════════════════════════════════════════════════════════════
 
   async getByNupi(nupi: string, accessToken?: string) {
-    const local = await db.query.patients.findFirst({
-      where: eq(patients.nupi, nupi),
-    });
+    // 1. Check local DB first
+    const local = await db.query.patients.findFirst({ where: eq(patients.nupi, nupi) });
     if (local) return { patient: local, source: 'local' };
 
+    // 2. Try FHIR $everything via gateway — returns real demographics from source facility
+    if (accessToken) {
+      try {
+        const fhirRes    = await gateway.get(`/api/fhir/Patient/${nupi}/$everything`, {
+          headers: { Authorization: `Bearer ${accessToken}` },
+          timeout: 10000,
+        });
+        const bundle     = fhirRes.data;
+        const fhirPt     = bundle?.entry?.map((e: any) => e.resource).find((r: any) => r?.resourceType === 'Patient');
+
+        if (fhirPt) {
+          const name       = fhirPt.name?.[0];
+          const firstName  = name?.given?.join(' ') || (fhirPt.name?.[0]?.text?.split(' ')?.[0] ?? 'Unknown');
+          const lastName   = name?.family           || (fhirPt.name?.[0]?.text?.split(' ')?.slice(1).join(' ') ?? '');
+          const dob        = fhirPt.birthDate ? new Date(fhirPt.birthDate) : null;
+          const phone      = fhirPt.telecom?.find((t: any) => t.system === 'phone')?.value || null;
+          const county     = fhirPt.address?.[0]?.district || fhirPt.address?.[0]?.state || null;
+          const subCounty  = fhirPt.address?.[0]?.city || null;
+          const gender     = (['male','female','other','unknown'].includes(fhirPt.gender) ? fhirPt.gender : 'unknown') as any;
+
+          // Only persist if we have meaningful data (real DOB, not placeholder)
+          if (dob && dob.getFullYear() > 1900) {
+            const [patient] = await db.insert(patients).values({
+              nupi,
+              nationalId:        fhirPt.identifier?.find((id: any) => id.system?.includes('national'))?.value || null,
+              firstName, lastName,
+              dateOfBirth:       dob,
+              gender,
+              phoneNumber:       phone,
+              address:           county ? { county, subCounty } : null,
+              isFederatedRecord: true,
+            }).returning();
+            console.log(`✅ Patient cached from FHIR: ${nupi}`);
+            return { patient, source: 'fhir' };
+          }
+
+          // FHIR returned data but no valid DOB — return display-only without persisting
+          return {
+            patient: {
+              id: nupi, nupi, firstName, lastName,
+              dateOfBirth: dob, gender, phoneNumber: phone,
+              nationalId: null, email: null, address: county ? { county, subCounty } : null,
+              bloodGroup: null, allergies: null, active: true, isFederatedRecord: true,
+              middleName: null, createdAt: new Date(), updatedAt: new Date(),
+            } as any,
+            source: 'fhir-display-only',
+          };
+        }
+      } catch (fhirErr: any) {
+        console.warn(`FHIR fetch failed for ${nupi}:`, fhirErr.message);
+      }
+    }
+
+    // 3. Fall back to chain history — display-only, DO NOT persist garbage dates
     try {
       const historyRes   = await gateway.get(`/api/patients/${nupi}/history`);
       const chainPatient = historyRes.data?.patient || {};
       const nameParts    = (chainPatient.name || '').trim().split(' ');
 
-      const [patient] = await db.insert(patients).values({
-        nupi,
-        firstName:         nameParts[0]                 || 'Unknown',
-        lastName:          nameParts.slice(1).join(' ') || 'Unknown',
-        dateOfBirth:       chainPatient.dob ? new Date(chainPatient.dob) : new Date('1900-01-01'),
-        gender:            'unknown' as 'male' | 'female' | 'other' | 'unknown',
-        isFederatedRecord: true,
-      }).returning();
-
-      console.log(`✅ Patient cached from chain history: ${nupi}`);
-      return { patient, source: 'gateway' };
+      // Return display object without writing to DB — no fake 1900 dates
+      return {
+        patient: {
+          id: nupi, nupi,
+          firstName:         nameParts[0]                 || 'Unknown',
+          lastName:          nameParts.slice(1).join(' ') || '',
+          dateOfBirth:       null,
+          gender:            'unknown',
+          phoneNumber:       null,
+          nationalId:        null,
+          email:             null,
+          address:           null,
+          bloodGroup:        null,
+          allergies:         null,
+          active:            true,
+          isFederatedRecord: true,
+          middleName:        null,
+          createdAt:         new Date(),
+          updatedAt:         new Date(),
+        } as any,
+        source: 'chain-display-only',
+      };
     } catch (err: any) {
-      console.error('getByNupi error:', err.response?.status, err.response?.data?.message || err.message);
       if (err.response?.status === 404) return null;
       throw err;
     }
   }
-  
+
+  // ══════════════════════════════════════════════════════════════
+  //  LIST ALL LOCAL PATIENTS
+  // ══════════════════════════════════════════════════════════════
+
   async getAll() {
     return db.query.patients.findMany({
       orderBy: (patients, { desc }) => [desc(patients.createdAt)],
     });
   }
-
   // ══════════════════════════════════════════════════════════════
   //  SEARCH
   // ══════════════════════════════════════════════════════════════
@@ -276,12 +342,36 @@ export class PatientService {
       this.getPatientHistory(nupi).catch(() => null),
     ]);
 
-    let patient = localPatient ?? undefined;
-    if (!patient) {
+    let patient: any = localPatient ?? undefined;
+
+    // Detect garbage records inserted from thin blockchain data (1900 DOB = placeholder)
+    const isGarbageRecord = patient?.isFederatedRecord &&
+      patient?.dateOfBirth &&
+      new Date(patient.dateOfBirth).getFullYear() <= 1900;
+
+    if (!patient || isGarbageRecord) {
       try {
         const result = await this.getByNupi(nupi, accessToken);
-        patient = result?.patient ?? undefined;
-      } catch { /* patient stays undefined */ }
+        if (result?.patient) {
+          patient = result.patient;
+          // If we got real data and the old record was garbage, clean it up
+          const garbageId = localPatient?.id;
+          if (isGarbageRecord && garbageId && result.source !== 'chain-display-only') {
+            await db.update(patients)
+              .set({
+                firstName:   patient.firstName,
+                lastName:    patient.lastName,
+                dateOfBirth: patient.dateOfBirth,
+                gender:      patient.gender,
+                phoneNumber: patient.phoneNumber,
+                address:     patient.address,
+                nationalId:  patient.nationalId,
+                updatedAt:   new Date(),
+              })
+              .where(eq(patients.id, garbageId));
+          }
+        }
+      } catch { /* keep existing patient if any */ }
     }
 
     const facilityId = process.env.FACILITY_ID || '';
@@ -351,6 +441,8 @@ export class PatientService {
       if (!result) throw new Error(`Patient ${data.nupi} not found on AfyaNet`);
       localPatient = result.patient;
     }
+
+    if (!localPatient) throw new Error(`Patient ${data.nupi} could not be resolved`);
 
     const [encounter] = await db.insert(encounters).values({
       patientId:        localPatient.id,
