@@ -11,6 +11,7 @@ import referralRoutes  from './referrals/referral.routes';
 
 // FIX: import the sync starter that was exported but never called
 import { startReferralSync } from './referrals/referral.service';
+import dashboardRoutes from './dashboard/dashboard.routes';
 
 dotenv.config();
 
@@ -38,7 +39,8 @@ app.use('/api/patients',   patientRoutes);
 app.use('/api/encounters', encounterRoutes);
 
 // FIX: referral routes were missing — frontend calls /api/referrals/*
-app.use('/api/referrals', referralRoutes);
+app.use('/api/referrals',  referralRoutes);
+app.use('/api/dashboard', dashboardRoutes);
 
 // FIX: proxy /api/facilities to the gateway so the referral creation
 //      form can populate its facility picker without the frontend
