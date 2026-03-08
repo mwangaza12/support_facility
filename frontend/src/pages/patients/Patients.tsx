@@ -4,33 +4,180 @@ import { usePatientStore } from '@/stores/patient.store';
 import { patientApi } from '@/api/patient.api';
 import {
   Search, UserPlus, ChevronRight, Loader2, AlertCircle,
-  PlusCircle, CheckCircle2, Users, FileText, RotateCcw,
+  PlusCircle, CheckCircle2, RotateCcw, FileText,
+  Calendar, Phone, User2, X, ScanFace,
 } from 'lucide-react';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 
 let searchTimeout: ReturnType<typeof setTimeout>;
 
+// ── Verify Slide-in Panel ─────────────────────────────────────────
+const VerifyPanel = ({ onClose }: { onClose: () => void }) => {
+  const navigate = useNavigate();
+  const { verifyPatient } = usePatientStore();
+
+  const [step,         setStep]         = useState<'idle' | 'question' | 'verified'>('idle');
+  const [nationalId,   setNationalId]   = useState('');
+  const [dob,          setDob]          = useState('');
+  const [question,     setQuestion]     = useState('');
+  const [answer,       setAnswer]       = useState('');
+  const [verifiedData, setVerifiedData] = useState<any>(null);
+  const [loading,      setLoading]      = useState(false);
+  const [error,        setError]        = useState('');
+
+  const handleGetQuestion = async () => {
+    if (!nationalId || !dob) return;
+    setLoading(true); setError('');
+    try {
+      const res = await patientApi.getSecurityQuestion(nationalId, dob);
+      setQuestion(res.data?.question || res.question);
+      setStep('question');
+    } catch (err: any) {
+      setError(err.response?.data?.error || err.message);
+    } finally { setLoading(false); }
+  };
+
+  const handleVerify = async () => {
+    setLoading(true); setError('');
+    try {
+      const data = await verifyPatient(nationalId, dob, answer);
+      setVerifiedData(data);
+      setStep('verified');
+    } catch (err: any) {
+      setError(err.response?.data?.error || err.message);
+    } finally { setLoading(false); }
+  };
+
+  const reset = () => {
+    setStep('idle'); setError('');
+    setNationalId(''); setDob(''); setAnswer('');
+    setQuestion(''); setVerifiedData(null);
+  };
+
+  const patientName = verifiedData?.patient?.name
+    || `${verifiedData?.patient?.firstName || ''} ${verifiedData?.patient?.lastName || ''}`.trim()
+    || verifiedData?.nupi;
+
+  const facility = verifiedData?.facilitiesVisited?.[0]?.name
+    || verifiedData?.patient?.facilityId || '—';
+
+  return (
+    <div className="fixed inset-0 z-50 flex justify-end">
+      {/* Backdrop */}
+      <div className="flex-1 bg-black/30 backdrop-blur-sm" onClick={onClose} />
+
+      {/* Panel */}
+      <div className="w-full max-w-sm bg-white shadow-2xl flex flex-col h-full">
+        {/* Header */}
+        <div className="flex items-center justify-between px-5 py-4 border-b border-slate-100">
+          <div className="flex items-center gap-2">
+            <ScanFace size={18} className="text-teal-500" />
+            <h2 className="font-semibold text-slate-800">Cross-Facility Lookup</h2>
+          </div>
+          <button onClick={onClose} className="p-1.5 hover:bg-slate-100 rounded-lg transition-colors">
+            <X size={16} className="text-slate-500" />
+          </button>
+        </div>
+
+        <div className="flex-1 overflow-y-auto p-5 space-y-4">
+          <p className="text-xs text-slate-400">
+            Verify a returning patient's identity to access their cross-facility records and create an encounter.
+          </p>
+
+          {/* Step: idle */}
+          {step === 'idle' && (
+            <div className="space-y-3">
+              <div className="space-y-1.5">
+                <label className="text-xs font-medium text-slate-600">National ID</label>
+                <Input placeholder="e.g. 12345678" value={nationalId}
+                  onChange={e => setNationalId(e.target.value)} />
+              </div>
+              <div className="space-y-1.5">
+                <label className="text-xs font-medium text-slate-600">Date of Birth</label>
+                <Input type="date" value={dob} onChange={e => setDob(e.target.value)} />
+              </div>
+              <Button className="w-full bg-teal-600 hover:bg-teal-700 text-white mt-1"
+                onClick={handleGetQuestion} disabled={loading || !nationalId || !dob}>
+                {loading ? <><Loader2 size={14} className="animate-spin mr-2" />Searching…</> : 'Get Security Question'}
+              </Button>
+            </div>
+          )}
+
+          {/* Step: question */}
+          {step === 'question' && (
+            <div className="space-y-3">
+              <div className="bg-teal-50 border border-teal-100 rounded-xl px-4 py-3">
+                <p className="text-xs font-medium text-teal-600 mb-1">Security Question</p>
+                <p className="text-sm text-slate-800">{question}</p>
+              </div>
+              <Input placeholder="Your answer" value={answer}
+                onChange={e => setAnswer(e.target.value)}
+                onKeyDown={e => e.key === 'Enter' && !loading && answer && handleVerify()} />
+              <div className="flex gap-2">
+                <Button variant="outline" className="flex-1" onClick={reset}>Back</Button>
+                <Button className="flex-1 bg-teal-600 hover:bg-teal-700 text-white"
+                  onClick={handleVerify} disabled={loading || !answer}>
+                  {loading ? <><Loader2 size={14} className="animate-spin mr-2" />Verifying…</> : 'Verify'}
+                </Button>
+              </div>
+            </div>
+          )}
+
+          {/* Step: verified */}
+          {step === 'verified' && verifiedData && (
+            <div className="space-y-4">
+              <div className="flex items-center gap-2 text-teal-600">
+                <CheckCircle2 size={16} />
+                <span className="text-sm font-semibold">Identity Confirmed</span>
+              </div>
+
+              <div className="bg-slate-50 border border-slate-200 rounded-xl p-4 space-y-2">
+                <p className="font-bold text-slate-800">{patientName}</p>
+                <p className="text-xs font-mono text-slate-400">{verifiedData.nupi}</p>
+                <p className="text-xs text-slate-500">
+                  Registered at: <span className="font-medium text-slate-700">{facility}</span>
+                </p>
+              </div>
+
+              <Button className="w-full bg-teal-600 hover:bg-teal-700 text-white gap-2 h-11"
+                onClick={() => navigate(`/patients/${verifiedData.nupi}/encounter`)}>
+                <PlusCircle size={15} /> Create Encounter
+              </Button>
+
+              <Button variant="outline" className="w-full gap-2"
+                onClick={() => navigate(`/patients/${verifiedData.nupi}`)}>
+                <FileText size={15} /> View Patient Chart
+              </Button>
+
+              <button onClick={reset}
+                className="w-full text-xs text-slate-400 hover:text-slate-600 flex items-center justify-center gap-1.5 py-1">
+                <RotateCcw size={11} /> Look up another patient
+              </button>
+            </div>
+          )}
+
+          {error && (
+            <p className="text-xs text-red-500 flex items-center gap-1.5 mt-1">
+              <AlertCircle size={13} /> {error}
+            </p>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+};
+
+// ── Main Page ─────────────────────────────────────────────────────
 export const Patients = () => {
   const navigate = useNavigate();
-  const { searchResults, isSearching, search, error, verifyPatient } = usePatientStore();
+  const { searchResults, isSearching, search, error } = usePatientStore();
 
-  // Local patients list
-  const [allPatients,   setAllPatients]   = useState<any[]>([]);
-  const [loadingList,   setLoadingList]   = useState(true);
-  const [searchQuery,   setSearchQuery]   = useState('');
+  const [allPatients,  setAllPatients]  = useState<any[]>([]);
+  const [loadingList,  setLoadingList]  = useState(true);
+  const [searchQuery,  setSearchQuery]  = useState('');
+  const [showVerify,   setShowVerify]   = useState(false);
 
-  // Verify flow
-  const [verifyStep,    setVerifyStep]    = useState<'idle' | 'question' | 'verified'>('idle');
-  const [nationalId,    setNationalId]    = useState('');
-  const [dob,           setDob]           = useState('');
-  const [question,      setQuestion]      = useState('');
-  const [answer,        setAnswer]        = useState('');
-  const [verifiedData,  setVerifiedData]  = useState<any>(null);
-  const [verifyLoading, setVerifyLoading] = useState(false);
-  const [verifyError,   setVerifyError]   = useState('');
-
-  // Load local patients on mount
   useEffect(() => {
     patientApi.getAll()
       .then(res => setAllPatients(res.data || []))
@@ -45,251 +192,145 @@ export const Patients = () => {
     searchTimeout = setTimeout(() => search(q), 400);
   }, [search]);
 
-  const displayPatients = searchQuery.trim()
-    ? searchResults
-    : allPatients;
-
-  // Step 1 — get security question
-  const handleGetQuestion = async () => {
-    if (!nationalId || !dob) return;
-    setVerifyLoading(true); setVerifyError('');
-    try {
-      const res = await patientApi.getSecurityQuestion(nationalId, dob);
-      setQuestion(res.data?.question || res.question);
-      setVerifyStep('question');
-    } catch (err: any) {
-      setVerifyError(err.response?.data?.error || err.message);
-    } finally { setVerifyLoading(false); }
-  };
-
-  // Step 2 — verify answer
-  const handleVerify = async () => {
-    setVerifyLoading(true); setVerifyError('');
-    try {
-      const data = await verifyPatient(nationalId, dob, answer);
-      setVerifiedData(data);
-      setVerifyStep('verified');
-    } catch (err: any) {
-      setVerifyError(err.response?.data?.error || err.message);
-    } finally { setVerifyLoading(false); }
-  };
-
-  const resetVerify = () => {
-    setVerifyStep('idle'); setVerifyError('');
-    setNationalId(''); setDob(''); setAnswer('');
-    setQuestion(''); setVerifiedData(null);
-  };
-
-  // Verified patient display name
-  const verifiedName = verifiedData?.patient?.name
-    || `${verifiedData?.patient?.firstName || ''} ${verifiedData?.patient?.lastName || ''}`.trim()
-    || verifiedData?.nupi;
-
-  const verifiedFacility = verifiedData?.facilitiesVisited?.[0]?.name
-    || verifiedData?.patient?.facilityId
-    || '—';
+  const displayList = searchQuery.trim() ? searchResults : allPatients;
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-5 max-w-5xl">
+
+      {/* ── Page header ─────────────────────────────────────────── */}
       <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-bold text-slate-800">Patients</h1>
-        <Button
-          onClick={() => navigate('/patients/register')}
-          className="bg-teal-600 hover:bg-teal-700 text-white gap-2">
-          <UserPlus size={16} /> Register New Patient
-        </Button>
+        <div>
+          <h1 className="text-2xl font-bold text-slate-800">Patients</h1>
+          <p className="text-sm text-slate-400 mt-0.5">
+            {loadingList ? 'Loading…' : `${allPatients.length} patient${allPatients.length !== 1 ? 's' : ''} registered at this facility`}
+          </p>
+        </div>
+        <div className="flex items-center gap-2">
+          <Button variant="outline" className="gap-2 text-teal-700 border-teal-200 hover:bg-teal-50"
+            onClick={() => setShowVerify(true)}>
+            <ScanFace size={15} /> Cross-Facility Lookup
+          </Button>
+          <Button className="bg-teal-600 hover:bg-teal-700 text-white gap-2"
+            onClick={() => navigate('/patients/register')}>
+            <UserPlus size={15} /> Register Patient
+          </Button>
+        </div>
       </div>
 
-      <div className="grid md:grid-cols-2 gap-6 items-start">
+      {/* ── Search bar ──────────────────────────────────────────── */}
+      <div className="relative">
+        <Search size={16} className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400" />
+        <Input
+          className="pl-11 h-11 text-sm bg-white border-slate-200"
+          placeholder="Search by name, NUPI or National ID…"
+          value={searchQuery}
+          onChange={e => handleSearch(e.target.value)}
+        />
+        {isSearching && (
+          <Loader2 size={15} className="absolute right-4 top-1/2 -translate-y-1/2 text-teal-500 animate-spin" />
+        )}
+      </div>
 
-        {/* ── Left: Patient list ─────────────────────────────────── */}
-        <div className="bg-white rounded-xl border border-slate-200 shadow-sm flex flex-col">
-          <div className="px-5 py-4 border-b border-slate-100 flex items-center gap-2">
-            <Users size={15} className="text-teal-500" />
-            <h2 className="font-semibold text-slate-700 text-sm flex-1">Registered Patients</h2>
-            <span className="text-xs bg-slate-100 text-slate-500 px-2 py-0.5 rounded-full font-medium">
-              {allPatients.length}
-            </span>
-          </div>
+      {/* ── Patient table ────────────────────────────────────────── */}
+      <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
 
-          <div className="p-4 border-b border-slate-100">
-            <div className="relative">
-              <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
-              <Input
-                className="pl-9 text-sm"
-                placeholder="Search by name, NUPI or National ID…"
-                value={searchQuery}
-                onChange={(e) => handleSearch(e.target.value)}
-              />
-            </div>
-          </div>
-
-          <div className="overflow-y-auto" style={{ maxHeight: 360 }}>
-            {(loadingList || isSearching) ? (
-              <div className="flex justify-center py-10">
-                <Loader2 size={20} className="animate-spin text-teal-500" />
-              </div>
-            ) : displayPatients.length === 0 ? (
-              <div className="py-10 text-center space-y-1">
-                <Users size={28} className="mx-auto text-slate-200" />
-                <p className="text-slate-400 text-sm">
-                  {searchQuery ? 'No patients match your search.' : 'No patients registered yet.'}
-                </p>
-              </div>
-            ) : (
-              <ul className="divide-y divide-slate-100">
-                {displayPatients.map((p: any) => (
-                  <li key={p.id || p.nupi}>
-                    <button
-                      onClick={() => navigate(`/patients/${p.nupi}`)}
-                      className="w-full flex items-center justify-between py-3 px-5 hover:bg-slate-50 transition-colors text-left group">
-                      <div>
-                        <p className="text-sm font-medium text-slate-800">
-                          {p.firstName} {p.lastName}
-                        </p>
-                        <p className="text-xs text-slate-400 mt-0.5 font-mono">{p.nupi}</p>
-                      </div>
-                      <ChevronRight size={15} className="text-slate-300 group-hover:text-slate-500 transition-colors" />
-                    </button>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </div>
-
-          {error && (
-            <div className="px-5 py-3 border-t border-slate-100">
-              <p className="text-xs text-red-500 flex items-center gap-1">
-                <AlertCircle size={13} /> {error}
-              </p>
-            </div>
-          )}
+        {/* Table header */}
+        <div className="grid grid-cols-12 px-5 py-3 bg-slate-50 border-b border-slate-100 text-xs font-semibold text-slate-500 uppercase tracking-wide">
+          <div className="col-span-4">Patient</div>
+          <div className="col-span-3">NUPI</div>
+          <div className="col-span-2">Date of Birth</div>
+          <div className="col-span-2">Contact</div>
+          <div className="col-span-1"></div>
         </div>
 
-        {/* ── Right: Verify returning patient ───────────────────── */}
-        <div className="bg-white rounded-xl border border-slate-200 shadow-sm">
-          <div className="px-5 py-4 border-b border-slate-100">
-            <h2 className="font-semibold text-slate-700 text-sm">Cross-Facility Lookup</h2>
-            <p className="text-xs text-slate-400 mt-0.5">
-              Verify a returning patient's identity to create an encounter.
+        {/* Rows */}
+        {loadingList ? (
+          <div className="flex items-center justify-center py-16">
+            <Loader2 size={24} className="animate-spin text-teal-500" />
+          </div>
+        ) : displayList.length === 0 ? (
+          <div className="flex flex-col items-center justify-center py-16 gap-3 text-slate-400">
+            <User2 size={36} className="opacity-30" />
+            <p className="text-sm">
+              {searchQuery ? 'No patients match your search.' : 'No patients registered yet.'}
             </p>
+            {!searchQuery && (
+              <Button variant="outline" className="text-xs mt-1" onClick={() => navigate('/patients/register')}>
+                <UserPlus size={13} className="mr-1.5" /> Register first patient
+              </Button>
+            )}
           </div>
-
-          <div className="p-5 space-y-4">
-
-            {/* Step: idle */}
-            {verifyStep === 'idle' && (
-              <div className="space-y-3">
-                <Input
-                  placeholder="National ID"
-                  value={nationalId}
-                  onChange={(e) => setNationalId(e.target.value)}
-                />
-                <Input
-                  type="date"
-                  value={dob}
-                  onChange={(e) => setDob(e.target.value)}
-                />
-                <Button
-                  className="w-full bg-teal-600 hover:bg-teal-700 text-white"
-                  onClick={handleGetQuestion}
-                  disabled={verifyLoading || !nationalId || !dob}>
-                  {verifyLoading
-                    ? <><Loader2 size={14} className="animate-spin mr-2" /> Searching…</>
-                    : 'Get Security Question'}
-                </Button>
-              </div>
-            )}
-
-            {/* Step: security question */}
-            {verifyStep === 'question' && (
-              <div className="space-y-3">
-                <div className="bg-teal-50 border border-teal-100 rounded-lg px-4 py-3">
-                  <p className="text-xs text-teal-600 font-medium mb-1">Security Question</p>
-                  <p className="text-sm text-slate-800">{question}</p>
-                </div>
-                <Input
-                  placeholder="Your answer"
-                  value={answer}
-                  onChange={(e) => setAnswer(e.target.value)}
-                  onKeyDown={(e) => e.key === 'Enter' && !verifyLoading && answer && handleVerify()}
-                />
-                <div className="flex gap-2">
-                  <Button variant="outline" className="flex-1" onClick={resetVerify}>
-                    Back
-                  </Button>
-                  <Button
-                    className="flex-1 bg-teal-600 hover:bg-teal-700 text-white"
-                    onClick={handleVerify}
-                    disabled={verifyLoading || !answer}>
-                    {verifyLoading
-                      ? <><Loader2 size={14} className="animate-spin mr-2" /> Verifying…</>
-                      : 'Verify Identity'}
-                  </Button>
-                </div>
-              </div>
-            )}
-
-            {/* Step: verified */}
-            {verifyStep === 'verified' && verifiedData && (
-              <div className="space-y-4">
-                {/* Identity confirmed badge */}
-                <div className="flex items-center gap-2 text-teal-600">
-                  <CheckCircle2 size={16} />
-                  <span className="text-sm font-semibold">Identity Confirmed</span>
-                </div>
-
-                {/* Patient summary card */}
-                <div className="bg-slate-50 rounded-xl border border-slate-200 p-4 space-y-1.5">
-                  <p className="text-base font-bold text-slate-800">{verifiedName}</p>
-                  <p className="text-xs font-mono text-slate-400">{verifiedData.nupi}</p>
-                  <p className="text-xs text-slate-500">
-                    Registered at:{' '}
-                    <span className="font-medium text-slate-700">{verifiedFacility}</span>
-                  </p>
-                  {verifiedData.facilitiesVisited?.length > 1 && (
-                    <p className="text-xs text-slate-400">
-                      {verifiedData.facilitiesVisited.length} facilities visited
-                    </p>
-                  )}
-                </div>
-
-                {/* Primary action: Create Encounter */}
-                <Button
-                  className="w-full bg-teal-600 hover:bg-teal-700 text-white gap-2 h-11"
-                  onClick={() => navigate(`/patients/${verifiedData.nupi}/encounter`)}>
-                  <PlusCircle size={16} />
-                  Create Encounter
-                </Button>
-
-                {/* Secondary action: View chart */}
-                <Button
-                  variant="outline"
-                  className="w-full gap-2"
-                  onClick={() => navigate(`/patients/${verifiedData.nupi}`)}>
-                  <FileText size={15} />
-                  View Patient Chart
-                </Button>
-
-                {/* Reset */}
+        ) : (
+          <ul className="divide-y divide-slate-100">
+            {displayList.map((p: any) => (
+              <li key={p.id || p.nupi}>
                 <button
-                  onClick={resetVerify}
-                  className="w-full text-xs text-slate-400 hover:text-slate-600 flex items-center justify-center gap-1.5 py-1 transition-colors">
-                  <RotateCcw size={11} />
-                  Look up another patient
+                  onClick={() => navigate(`/patients/${p.nupi}`)}
+                  className="w-full grid grid-cols-12 px-5 py-4 hover:bg-slate-50 transition-colors text-left group items-center">
+
+                  {/* Name + gender badge */}
+                  <div className="col-span-4 flex items-center gap-3">
+                    <div className="w-8 h-8 rounded-full bg-teal-100 flex items-center justify-center shrink-0">
+                      <span className="text-xs font-bold text-teal-700">
+                        {(p.firstName?.[0] || '?')}{(p.lastName?.[0] || '')}
+                      </span>
+                    </div>
+                    <div>
+                      <p className="text-sm font-medium text-slate-800">
+                        {p.firstName} {p.lastName}
+                      </p>
+                      {p.gender && (
+                        <span className="text-xs text-slate-400 capitalize">{p.gender}</span>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* NUPI */}
+                  <div className="col-span-3">
+                    <p className="text-xs font-mono text-slate-500 truncate">{p.nupi}</p>
+                  </div>
+
+                  {/* DOB */}
+                  <div className="col-span-2 flex items-center gap-1.5 text-xs text-slate-500">
+                    {p.dateOfBirth ? (
+                      <>
+                        <Calendar size={12} className="text-slate-300 shrink-0" />
+                        {new Date(p.dateOfBirth).toLocaleDateString('en-KE', {
+                          day: 'numeric', month: 'short', year: 'numeric'
+                        })}
+                      </>
+                    ) : '—'}
+                  </div>
+
+                  {/* Phone */}
+                  <div className="col-span-2 flex items-center gap-1.5 text-xs text-slate-500">
+                    {p.phoneNumber ? (
+                      <>
+                        <Phone size={12} className="text-slate-300 shrink-0" />
+                        {p.phoneNumber}
+                      </>
+                    ) : '—'}
+                  </div>
+
+                  {/* Arrow */}
+                  <div className="col-span-1 flex justify-end">
+                    <ChevronRight size={15} className="text-slate-300 group-hover:text-teal-500 transition-colors" />
+                  </div>
                 </button>
-              </div>
-            )}
-
-            {verifyError && (
-              <p className="text-xs text-red-500 flex items-center gap-1.5">
-                <AlertCircle size={13} /> {verifyError}
-              </p>
-            )}
-          </div>
-        </div>
-
+              </li>
+            ))}
+          </ul>
+        )}
       </div>
+
+      {error && (
+        <p className="text-xs text-red-500 flex items-center gap-1.5">
+          <AlertCircle size={13} /> {error}
+        </p>
+      )}
+
+      {/* Cross-facility verify slide-in */}
+      {showVerify && <VerifyPanel onClose={() => setShowVerify(false)} />}
     </div>
   );
 };
