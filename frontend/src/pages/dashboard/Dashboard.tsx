@@ -1,15 +1,19 @@
+import { useNavigate } from 'react-router-dom';
 import { useAuthStore } from '@/stores/auth.store';
 import { Activity, Users, ClipboardList, TrendingUp } from 'lucide-react';
 
 const stats = [
-  { label: 'Patients Today',    value: '—', icon: Users,          color: 'text-teal-600',  bg: 'bg-teal-50'  },
-  { label: 'Encounters Today',  value: '—', icon: ClipboardList,  color: 'text-blue-600',  bg: 'bg-blue-50'  },
-  { label: 'Active Encounters', value: '—', icon: Activity,       color: 'text-amber-600', bg: 'bg-amber-50' },
-  { label: 'Chain Blocks',      value: '—', icon: TrendingUp,     color: 'text-violet-600',bg: 'bg-violet-50'},
+  { label: 'Patients Today',    value: '—', icon: Users,          color: 'text-teal-600',  bg: 'bg-teal-50'   },
+  { label: 'Encounters Today',  value: '—', icon: ClipboardList,  color: 'text-blue-600',  bg: 'bg-blue-50'   },
+  { label: 'Active Encounters', value: '—', icon: Activity,       color: 'text-amber-600', bg: 'bg-amber-50'  },
+  { label: 'Chain Blocks',      value: '—', icon: TrendingUp,     color: 'text-violet-600',bg: 'bg-violet-50' },
 ];
 
 export const Dashboard = () => {
   const { user } = useAuthStore();
+  // FIX: was using <a href> which causes a full page reload and wipes
+  //      sessionStorage-backed Zustand state. Use navigate() instead.
+  const navigate = useNavigate();
 
   return (
     <div className="space-y-6">
@@ -19,7 +23,9 @@ export const Dashboard = () => {
           Good morning, {user?.firstName} 👋
         </h1>
         <p className="text-slate-500 mt-1 text-sm">
-          {new Date().toLocaleDateString('en-KE', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}
+          {new Date().toLocaleDateString('en-KE', {
+            weekday: 'long', year: 'numeric', month: 'long', day: 'numeric',
+          })}
         </p>
       </div>
 
@@ -41,16 +47,17 @@ export const Dashboard = () => {
         <h2 className="text-sm font-semibold text-slate-700 mb-4">Quick Actions</h2>
         <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
           {[
-            { label: 'Search Patient',   href: '/patients',  color: 'bg-teal-600 hover:bg-teal-700'   },
-            { label: 'New Encounter',    href: '/patients',  color: 'bg-blue-600 hover:bg-blue-700'   },
-            { label: 'View Records',     href: '/patients',  color: 'bg-slate-700 hover:bg-slate-800' },
+            { label: 'Search Patient',    href: '/patients',          color: 'bg-teal-600 hover:bg-teal-700'   },
+            { label: 'Register Patient',  href: '/patients/register', color: 'bg-blue-600 hover:bg-blue-700'   },
+            { label: 'View Records',      href: '/patients',          color: 'bg-slate-700 hover:bg-slate-800' },
           ].map(({ label, href, color }) => (
-            <a
+            // FIX: was <a href={href}> — now uses navigate() to keep SPA state intact
+            <button
               key={label}
-              href={href}
+              onClick={() => navigate(href)}
               className={`${color} text-white text-sm font-medium px-4 py-3 rounded-lg text-center transition-colors`}>
               {label}
-            </a>
+            </button>
           ))}
         </div>
       </div>
@@ -65,8 +72,8 @@ export const Dashboard = () => {
           </span>
         </div>
         <p className="text-xs text-slate-400">
-          Connected to the HIE Gateway. Patient records are federated across all registered facilities.
-          All encounters are immutably logged on AfyaChain.
+          Connected to the HIE Gateway. Patient records are federated across all registered
+          facilities. All encounters are immutably logged on AfyaChain.
         </p>
       </div>
     </div>

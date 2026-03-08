@@ -1,8 +1,11 @@
 import { apiClient } from './auth.api';
 
+// NOTE: apiClient.baseURL = VITE_API_URL = https://…/api
+// Paths here must NOT include /api prefix — patient.api.ts is the reference.
+
 export const referralApi = {
 
-  // Create a referral (gateway blockchain)
+  // POST /api/referrals
   create: async (data: {
     nupi:        string;
     toFacility:  string;
@@ -11,43 +14,47 @@ export const referralApi = {
     issuedBy?:   string;
     notes?:      string;
   }) => {
-    const res = await apiClient.post('/api/referrals', data);
+    const res = await apiClient.post('/referrals', data);   // FIX: was '/api/referrals'
     return res.data;
   },
 
-  // Get outgoing referrals from this facility (local DB)
+  // GET /api/referrals/outgoing
   getOutgoing: async () => {
-    const res = await apiClient.get('/api/referrals/outgoing');
+    const res = await apiClient.get('/referrals/outgoing'); // FIX: was '/api/referrals/outgoing'
     return res.data;
   },
 
-  // Get incoming referrals to this facility (local DB)
+  // GET /api/referrals/incoming
   getIncoming: async () => {
-    const res = await apiClient.get('/api/referrals/incoming');
+    const res = await apiClient.get('/referrals/incoming'); // FIX: was '/api/referrals/incoming'
     return res.data;
   },
 
-  // Get referral by ID
+  // GET /api/referrals/:id
   getById: async (id: string) => {
-    const res = await apiClient.get(`/api/referrals/${id}`);
+    const res = await apiClient.get(`/referrals/${id}`);    // FIX: was '/api/referrals/:id'
     return res.data;
   },
 
-  // Update referral status
-  updateStatus: async (id: string, status: 'PENDING' | 'ACCEPTED' | 'REJECTED' | 'COMPLETED' | 'CANCELLED', notes?: string) => {
-    const res = await apiClient.patch(`/api/referrals/${id}/status`, { status, notes });
+  // PATCH /api/referrals/:id/status
+  updateStatus: async (
+    id: string,
+    status: 'PENDING' | 'ACCEPTED' | 'REJECTED' | 'COMPLETED' | 'CANCELLED',
+    notes?: string,
+  ) => {
+    const res = await apiClient.patch(`/referrals/${id}/status`, { status, notes }); // FIX
     return res.data;
   },
 
-  // Get referrals for a specific patient
+  // GET /api/referrals/patient/:nupi
   getForPatient: async (nupi: string) => {
-    const res = await apiClient.get(`/api/referrals/patient/${nupi}`);
+    const res = await apiClient.get(`/referrals/patient/${nupi}`); // FIX
     return res.data;
   },
 
-  // Get all registered facilities from gateway
+  // GET /api/facilities  (proxied by SupportFacility backend → gateway)
   getFacilities: async () => {
-    const res = await apiClient.get('/api/facilities');
+    const res = await apiClient.get('/facilities');         // FIX: was '/api/facilities'
     return res.data;
   },
 };
