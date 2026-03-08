@@ -62,7 +62,7 @@ export const RegisterPatient = () => {
     if (!form.dateOfBirth)          return 'Date of birth is required';
     if (!form.phoneNumber)          return 'Phone number is required';
     if (!form.securityAnswer)       return 'Security answer is required';
-    if (form.pin.length < 4)        return 'PIN must be at least 4 digits';
+    if (form.pin.length < 4 || form.pin.length > 8) return 'PIN must be 4–8 digits';
     if (form.pin !== form.pinConfirm) return 'PINs do not match';
     return null;
   };
@@ -254,7 +254,7 @@ export const RegisterPatient = () => {
 
         <div className="grid grid-cols-2 gap-3">
           <div className="space-y-1.5">
-            <Label>PIN (≥ 4 digits) <span className="text-red-500">*</span></Label>
+            <Label>PIN (4–8 digits) <span className="text-red-500">*</span></Label>
             <Input
               type="password"
               placeholder="Patient's PIN"
