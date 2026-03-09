@@ -19,6 +19,10 @@ export interface Patient {
   allergies:   any[] | null;
   active:      boolean;
   isFederatedRecord: boolean;
+  // Fields populated after cross-facility verification
+  name?:               string;
+  registeredFacility?: string;
+  facilityCounty?:     string;
 }
 
 export interface Encounter {
@@ -34,7 +38,7 @@ export interface Encounter {
   notes:            string | null;
   facilityId:       string;
   facilityName?:    string;
-  source:           'local' | 'gateway';
+  source:           'local' | 'gateway' | 'remote';
   status:           string;
 }
 
@@ -55,12 +59,26 @@ interface PatientState {
   error: string | null;
 
   // Actions
-  search:        (query: string) => Promise<void>;
-  verifyPatient: (nationalId: string, dob: string, answer: string) => Promise<any>;
-  verifyByPin:   (nationalId: string, dob: string, pin: string) => Promise<any>;
-  loadPatient:   (nupi: string) => Promise<void>;
-  clearPatient:  () => void;
-  clearError:    () => void;
+  search:       (query: string) => Promise<void>;
+  verifyPatient:(nationalId: string, dob: string, answer: string) => Promise<any>;
+  verifyByPin:  (nationalId: string, dob: string, pin: string) => Promise<any>;
+  loadPatient:  (nupi: string) => Promise<void>;
+  clearPatient: () => void;
+  clearError:   () => void;
+
+  /**
+   * Merge FHIR-sourced demographics into currentPatient after verification.
+   * Replaces only the keys present in `patch`, leaving the rest intact.
+   * This clears the "ghost record" state so the demographics card renders
+   * instead of the "Demographics unavailable" banner.
+   */
+  setPatientDemographics: (nupi: string, patch: Record<string, any>) => void;
+
+  /**
+   * Replace the encounters list wholesale.
+   * Called after fetching cross-facility encounters from the FHIR gateway.
+   */
+  setEncounters: (encounters: Encounter[]) => void;
 }
 
 // ── Helpers ───────────────────────────────────────────────────────
@@ -85,7 +103,7 @@ export const usePatientStore = create<PatientState>((set, get) => ({
   isSearching:       false,
   currentPatient:    null,
   encounters:        [],
-  accessToken:       loadToken(),   // ← hydrate from sessionStorage on init
+  accessToken:       loadToken(),   // hydrate from sessionStorage on init
   facilitiesVisited: [],
   isLoadingPatient:  false,
   error:             null,
@@ -104,7 +122,7 @@ export const usePatientStore = create<PatientState>((set, get) => ({
   verifyPatient: async (nationalId, dob, answer) => {
     const res  = await patientApi.verifyAnswer({ nationalId, dob, answer });
     const data = res.data || res;
-    saveToken(data.token);   // ← persist so it survives navigation
+    saveToken(data.token);
     set({
       accessToken:       data.token,
       facilitiesVisited: data.facilitiesVisited || [],
@@ -116,7 +134,7 @@ export const usePatientStore = create<PatientState>((set, get) => ({
   verifyByPin: async (nationalId, dob, pin) => {
     const res  = await patientApi.verifyPin({ nationalId, dob, pin });
     const data = res.data || res;
-    saveToken(data.token);   // ← persist
+    saveToken(data.token);
     set({
       accessToken:       data.token,
       facilitiesVisited: data.facilitiesVisited || [],
@@ -147,10 +165,48 @@ export const usePatientStore = create<PatientState>((set, get) => ({
     }
   },
 
+  // ── Merge FHIR demographics into currentPatient ───────────────────
+  // After this runs, isGhostRecord in PatientDetail evaluates to false
+  // because dateOfBirth / nationalId / phoneNumber will be populated.
+  setPatientDemographics: (nupi, patch) =>
+    set((state) => {
+      if (!state.currentPatient) {
+        // No currentPatient yet — build a minimal object from the patch
+        return {
+          currentPatient: {
+            id:          nupi,
+            nupi,
+            nationalId:  patch.nationalId  ?? '',
+            firstName:   '',
+            lastName:    '',
+            middleName:  null,
+            dateOfBirth: patch.dateOfBirth ?? '',
+            gender:      patch.gender      ?? '',
+            phoneNumber: patch.phoneNumber ?? null,
+            email:       null,
+            address:     patch.address     ?? null,
+            bloodGroup:  patch.bloodGroup  ?? null,
+            allergies:   null,
+            active:      true,
+            isFederatedRecord: true,
+            ...patch,
+          } as Patient,
+        };
+      }
+      // Guard: only patch if this is still the same patient
+      if (state.currentPatient.nupi !== nupi) return {};
+      return { currentPatient: { ...state.currentPatient, ...patch } as Patient };
+    }),
+
+  // ── Replace encounters list ───────────────────────────────────────
+  setEncounters: (encounters) => set({ encounters }),
+
   clearPatient: () => {
-    clearToken();   // ← clear token on patient clear
+    clearToken();
     set({
-      currentPatient: null, encounters: [], accessToken: null,
+      currentPatient:    null,
+      encounters:        [],
+      accessToken:       null,
       facilitiesVisited: [],
     });
   },

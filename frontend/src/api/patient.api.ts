@@ -76,6 +76,43 @@ export const patientApi = {
     return res.data;
   },
 
+  /**
+   * Fetch full FHIR Patient demographics from the patient's registered facility
+   * via the HIE gateway.
+   *
+   * GET /api/fhir/Patient/:nupi?facility=REGISTERED_FACILITY_ID
+   *
+   * Call after identity verification — pass the token and registeredFacilityId
+   * from the verifyAnswer/verifyPin response.
+   */
+  getFhirPatient: async (nupi: string, accessToken: string, facilityId?: string) => {
+    const params: Record<string, string> = {};
+    if (facilityId) params.facility = facilityId;
+    const res = await apiClient.get(`/fhir/Patient/${nupi}`, {
+      params,
+      headers: { Authorization: `Bearer ${accessToken}` },
+    });
+    return res.data;
+  },
+
+  /**
+   * Fetch FHIR Encounter resources for a patient from the registered facility
+   * via the HIE gateway.
+   *
+   * GET /api/fhir/Patient/:nupi/Encounter?facility=REGISTERED_FACILITY_ID
+   *
+   * Returns a FHIR Bundle. PatientDetail.tsx maps it via mapFhirEncounters().
+   */
+  getFhirEncounters: async (nupi: string, accessToken: string, facilityId?: string) => {
+    const params: Record<string, string> = {};
+    if (facilityId) params.facility = facilityId;
+    const res = await apiClient.get(`/fhir/Patient/${nupi}/Encounter`, {
+      params,
+      headers: { Authorization: `Bearer ${accessToken}` },
+    });
+    return res.data;
+  },
+
 };
 
 // ── Staff API ─────────────────────────────────────────────────────
