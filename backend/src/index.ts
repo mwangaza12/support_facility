@@ -87,6 +87,14 @@ const start = async () => {
     //      from other facilities are picked up on startup and every 5 min
     await startReferralSync();
 
+    // 👇 THIS IS THE ONLY NEW LINE - Self-ping every 14 minutes to prevent Render from sleeping
+    setInterval(async () => {
+      try {
+        await axios.get(`http://localhost:${PORT}/health`);
+        console.log('💓 Self-ping at', new Date().toISOString());
+      } catch (error) {}
+    }, 840000); // 14 minutes in milliseconds (Render sleeps after 15)
+
   } catch (error) {
     console.error('Failed to start server:', error);
     process.exit(1);
