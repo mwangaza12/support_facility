@@ -8,6 +8,7 @@ import authRoutes      from './auth/auth.routes';
 import encounterRoutes from './encounter/encounter.routes';
 import patientRoutes   from './patients/patient.routes';
 import referralRoutes  from './referrals/referral.routes';
+import fhirRoutes      from './fhir/fhir.routes';
 
 // FIX: import the sync starter that was exported but never called
 import { startReferralSync } from './referrals/referral.service';
@@ -41,6 +42,11 @@ app.use('/api/encounters', encounterRoutes);
 // FIX: referral routes were missing — frontend calls /api/referrals/*
 app.use('/api/referrals',  referralRoutes);
 app.use('/api/dashboard', dashboardRoutes);
+
+// FHIR R4 endpoints — called exclusively by the HIE Gateway FHIR proxy.
+// These expose patient demographics + encounters to other facilities
+// that have a valid access token. Auth is via X-Gateway-ID: HIE_GATEWAY.
+app.use('/fhir', fhirRoutes);
 
 // FIX: proxy /api/facilities to the gateway so the referral creation
 //      form can populate its facility picker without the frontend

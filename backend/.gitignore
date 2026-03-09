@@ -2,3 +2,4 @@
 dist/
 node_modules/
 nupi-registry-key.json
+settings.json
