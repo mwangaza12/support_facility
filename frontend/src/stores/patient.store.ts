@@ -149,9 +149,18 @@ export const usePatientStore = create<PatientState>((set, get) => ({
     const accessToken = get().accessToken || storedToken || '';
     if (storedToken && !get().accessToken) set({ accessToken: storedToken });
 
+    // If a token exists the patient was verified via VerifyPanel which already
+    // fetched full FHIR demographics via setPatientDemographics. getFederatedData
+    // returns a thin blockchain record with all nulls — running it here would
+    // overwrite the real demographics. Skip the network call entirely.
+    if (accessToken) {
+      set({ isLoadingPatient: false });
+      return;
+    }
+
     set({ isLoadingPatient: true, error: null });
     try {
-      const res  = await patientApi.getFederatedData(nupi, accessToken);
+      const res  = await patientApi.getFederatedData(nupi, '');
       const data = res.data;
 
       set({

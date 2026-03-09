@@ -143,7 +143,14 @@ export const PatientDetail = () => {
   };
 
   useEffect(() => {
-    if (nupi) loadPatient(nupi);
+    if (!nupi) return;
+    // If accessToken exists in the store, the patient was just verified via
+    // VerifyPanel which already fetched full FHIR demographics and pushed them
+    // into the store via setPatientDemographics. Calling loadPatient here would
+    // hit getFederatedData which returns a thin blockchain record and overwrite
+    // the real demographics with nulls. Skip it entirely.
+    const { accessToken: token } = usePatientStore.getState();
+    if (!token) loadPatient(nupi);
   }, [nupi]);
 
   // ── Loading ───────────────────────────────────────────────────
@@ -173,15 +180,12 @@ export const PatientDetail = () => {
   const age      = dobValid ? Math.floor((Date.now() - dob!.getTime()) / 3.156e10) : null;
   const isActive = p.active !== false;
 
-  // ✅ FIX: a ghost record is one that has NO demographics at all AND has never
-  //        been verified in this session. Once verifyStep === 'done' or demographics
-  //        have been merged in, this becomes false and the real data renders.
+  // Ghost record = federated patient with no demographics loaded yet.
+  // Based purely on store data — NOT on local UI state like verifyStep,
+  // because verification happens in VerifyPanel (a separate component).
+  // Clears automatically once setPatientDemographics() populates the store.
   const isGhostRecord =
-    p.isFederatedRecord &&
-    verifyStep !== 'done' &&
-    !dobValid &&
-    !p.phoneNumber &&
-    !p.nationalId;
+    p.isFederatedRecord && !dobValid && !p.phoneNumber && !p.nationalId;
 
   return (
     <div className="space-y-6 max-w-5xl">
@@ -297,7 +301,7 @@ export const PatientDetail = () => {
         </div>
 
         {/* ── Verify identity (federated + not yet verified) ────── */}
-        {p.isFederatedRecord && !accessToken && verifyStep !== 'done' && (
+        {p.isFederatedRecord && !accessToken && !isGhostRecord === false && isGhostRecord && (
           <div id="verify-section" className="md:col-span-2">
             <div className="bg-white rounded-xl border border-amber-200 p-5 shadow-sm space-y-4">
               <div className="flex items-center gap-2">
@@ -358,7 +362,7 @@ export const PatientDetail = () => {
         )}
 
         {/* ── Encounters ───────────────────────────────────────── */}
-        <div className={p.isFederatedRecord && !accessToken && verifyStep !== 'done' ? 'md:col-span-3' : 'md:col-span-2'}>
+        <div className={p.isFederatedRecord && !accessToken && !isGhostRecord === false && isGhostRecord ? 'md:col-span-3' : 'md:col-span-2'}>
           <div className="bg-white rounded-xl border border-slate-200 shadow-sm">
             <div className="px-5 py-4 border-b border-slate-100 flex items-center justify-between">
               <h2 className="font-semibold text-slate-700 text-sm flex items-center gap-2">
