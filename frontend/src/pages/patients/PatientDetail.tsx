@@ -16,22 +16,80 @@ const badge = (label: string, color: string) => (
 );
 
 export const PatientDetail = () => {
-  const { nupi }       = useParams<{ nupi: string }>();
-  const navigate       = useNavigate();
+  const { nupi } = useParams<{ nupi: string }>();
+  const navigate = useNavigate();
   const {
     currentPatient, encounters, facilitiesVisited,
     isLoadingPatient, loadPatient, accessToken, verifyPatient,
-    setPatientDemographics,
-    setEncounters,              // ✅ NEW: sets cross-facility encounters
+    setPatientDemographics, setEncounters, clearPatient,
   } = usePatientStore();
 
-  const [verifyStep,    setVerifyStep]    = useState<'idle' | 'question' | 'done'>('idle');
-  const [question,      setQuestion]      = useState('');
-  const [answer,        setAnswer]        = useState('');
+  const [verifyStep, setVerifyStep] = useState<'idle' | 'question' | 'done'>('idle');
+  const [question, setQuestion] = useState('');
+  const [answer, setAnswer] = useState('');
   const [verifyLoading, setVerifyLoading] = useState(false);
-  const [verifyError,   setVerifyError]   = useState('');
+  const [verifyError, setVerifyError] = useState('');
   const [verifyNationalId, setVerifyNationalId] = useState('');
-  const [verifyDob,     setVerifyDob]     = useState('');
+  const [verifyDob, setVerifyDob] = useState('');
+  const [isLocalPatient, setIsLocalPatient] = useState(false);
+
+  // FIX: Check if patient is local (has full demographics)
+  const hasFullDemographics = currentPatient && (
+    currentPatient.dateOfBirth ||
+    currentPatient.phoneNumber ||
+    currentPatient.nationalId
+  );
+
+  // FIX: Determine if this is a local patient (no token needed)
+  const isGhostRecord = currentPatient?.isFederatedRecord && !hasFullDemographics;
+
+  // FIX: Load patient data based on type
+  useEffect(() => {
+    if (!nupi) return;
+
+    const loadPatientData = async () => {
+      try {
+        // First, try to get local patient (no token needed)
+        const localPatient = await patientApi.getByNupi(nupi);
+        
+        if (localPatient && localPatient.id) {
+          // This is a local patient! 🎉
+          setIsLocalPatient(true);
+          setPatientDemographics(nupi, localPatient);
+          
+          // Load local encounters
+          const localEncounters = await patientApi.getLocalEncounters(nupi);
+          if (localEncounters.length > 0) {
+            setEncounters(localEncounters.map((enc: any) => ({
+              ...enc,
+              source: 'local',
+            })));
+          }
+        } else {
+          // Not a local patient, try federated (might need token)
+          setIsLocalPatient(false);
+          
+          // Only call loadPatient if we don't have a current patient
+          if (!currentPatient || currentPatient.nupi !== nupi) {
+            await loadPatient(nupi);
+          }
+        }
+      } catch (error) {
+        console.error('Error loading patient:', error);
+        // If local lookup fails, try federated as fallback
+        if (!currentPatient || currentPatient.nupi !== nupi) {
+          await loadPatient(nupi);
+        }
+      }
+    };
+
+    loadPatientData();
+
+    // Cleanup when unmounting
+    return () => {
+      clearPatient();
+    };
+  }, [nupi]);
 
   const handleGetQuestion = async () => {
     if (!verifyNationalId || !verifyDob) return;
@@ -45,14 +103,13 @@ export const PatientDetail = () => {
     } finally { setVerifyLoading(false); }
   };
 
-  // ✅ FIX: after verification, fetch FHIR demographics from the registered
-  //        facility and merge them into the store so demographics are visible.
   const handleVerify = async () => {
     setVerifyLoading(true); setVerifyError('');
     try {
-      // Step 1 — verify identity, get token + registered facility info
       const verifyResult = await verifyPatient(verifyNationalId, verifyDob, answer);
-      const { token, patient: meta } = verifyResult;
+      
+      const token = verifyResult.token || verifyResult.access_token;
+      const meta = verifyResult.patient || {};
       const registeredFacilityId = meta?.registeredFacilityId;
 
       if (!token || !nupi) {
@@ -60,67 +117,64 @@ export const PatientDetail = () => {
         return;
       }
 
-      // Step 2 — fetch full FHIR demographics from the registered facility
-      //          Pass ?facility=registeredFacilityId so the gateway queries
-      //          the correct EMR, not the requesting facility.
+      // Fetch FHIR demographics
       const fhirRes = await patientApi.getFhirPatient(nupi, token, registeredFacilityId);
 
       if (fhirRes?.data) {
         const fhir = fhirRes.data;
-
-        // Map FHIR R4 Patient resource fields to our internal shape
         const demographics = {
-          // Name: FHIR uses HumanName array
-          name:        fhir.name?.[0]
+          nupi: nupi,
+          name: fhir.name?.[0]
             ? [fhir.name[0].given?.join(' '), fhir.name[0].family].filter(Boolean).join(' ')
             : meta?.name || '',
+          firstName: fhir.name?.[0]?.given?.join(' ') || meta?.name?.split(' ')[0] || '',
+          lastName: fhir.name?.[0]?.family || meta?.name?.split(' ').slice(-1)[0] || '',
           dateOfBirth: fhir.birthDate || '',
-          gender:      fhir.gender    || '',
-          // Identifier: look for national ID system or fall back to first identifier
-          nationalId:  fhir.identifier?.find((id: any) =>
+          gender: fhir.gender || '',
+          nationalId: fhir.identifier?.find((id: any) =>
             id.system?.includes('national') || id.type?.text?.toLowerCase().includes('national')
           )?.value || fhir.identifier?.[0]?.value || '',
-          // Phone
           phoneNumber: fhir.telecom?.find((t: any) => t.system === 'phone')?.value || '',
-          // Address
           address: {
-            county:    fhir.address?.[0]?.district  || '',
-            subCounty: fhir.address?.[0]?.city      || '',
-            village:   fhir.address?.[0]?.line?.[0] || '',
+            county: fhir.address?.[0]?.district || '',
+            subCounty: fhir.address?.[0]?.city || '',
+            village: fhir.address?.[0]?.line?.[0] || '',
           },
           bloodGroup: fhir.extension?.find((e: any) =>
             e.url?.includes('bloodGroup') || e.url?.includes('blood-group')
           )?.valueString || '',
-          // Keep facility info from verify response (authoritative)
-          registeredFacility:   meta?.registeredFacility   || '',
+          registeredFacility: meta?.registeredFacility || '',
           registeredFacilityId: meta?.registeredFacilityId || '',
-          facilityCounty:       meta?.facilityCounty       || '',
-          isCurrentFacility:    meta?.isCurrentFacility    ?? false,
+          facilityCounty: meta?.facilityCounty || '',
+          isCurrentFacility: meta?.isCurrentFacility || false,
+          isFederatedRecord: true,
         };
 
         setPatientDemographics(nupi, demographics);
       }
 
-      // Step 3 — fetch cross-facility encounters from the registered facility.
-      //          Pass ?registeredFacility= so $everything always includes the
-      //          home facility even if it has no blockchain entries yet.
+      // Fetch encounters
       try {
-        const everythingRes = await patientApi.getFhirEncounters(nupi, token, registeredFacilityId);
-        if (everythingRes?.data?.entry) {
-          const crossFacilityEncounters = everythingRes.data.entry
+        const encRes = await patientApi.getFhirEncounters(nupi, token, registeredFacilityId);
+        
+        if (encRes?.data) {
+          const bundle = encRes.data;
+          const entries = bundle.entry || [];
+          
+          const crossFacilityEncounters = entries
             .map((e: any) => e.resource)
             .filter((r: any) => r?.resourceType === 'Encounter')
             .map((enc: any) => ({
-              id:              enc.id,
-              encounterId:     enc.id,
-              encounterType:   enc.class?.display || enc.type?.[0]?.text || 'outpatient',
-              encounterDate:   enc.period?.start  || enc.meta?.lastUpdated || '',
-              chiefComplaint:  enc.reasonCode?.[0]?.text || enc.reasonReference?.[0]?.display || '',
+              id: enc.id,
+              encounterId: enc.id,
+              encounterType: enc.class?.display || enc.type?.[0]?.text || 'outpatient',
+              encounterDate: enc.period?.start || enc.meta?.lastUpdated || '',
+              chiefComplaint: enc.reasonCode?.[0]?.text || enc.reasonReference?.[0]?.display || '',
               practitionerName: enc.participant?.[0]?.individual?.display || '',
-              status:          enc.status || '',
-              source:          'federated',
-              facilityName:    enc.meta?.sourceName || meta?.registeredFacility || '',
-              facilityId:      enc.meta?.source     || registeredFacilityId     || '',
+              status: enc.status || '',
+              source: 'federated',
+              facilityName: enc.meta?.sourceName || meta?.registeredFacility || '',
+              facilityId: enc.meta?.source || registeredFacilityId || '',
             }));
 
           if (crossFacilityEncounters.length > 0) {
@@ -128,43 +182,31 @@ export const PatientDetail = () => {
           }
         }
       } catch (encErr) {
-        // Non-fatal — demographics still loaded, just log the encounter fetch failure
-        console.warn('Could not fetch cross-facility encounters:', encErr);
+        console.warn('Could not fetch encounters:', encErr);
       }
 
       setVerifyStep('done');
-
-      // Reload the base patient record so facilitiesVisited etc. refresh
-      if (nupi) loadPatient(nupi);
+      
+      // Reload to refresh UI
+      setTimeout(() => window.location.reload(), 500);
 
     } catch (err: any) {
       setVerifyError(err.response?.data?.error || err.message);
     } finally { setVerifyLoading(false); }
   };
 
-  useEffect(() => {
-    if (!nupi) return;
-    // If accessToken exists in the store, the patient was just verified via
-    // VerifyPanel which already fetched full FHIR demographics and pushed them
-    // into the store via setPatientDemographics. Calling loadPatient here would
-    // hit getFederatedData which returns a thin blockchain record and overwrite
-    // the real demographics with nulls. Skip it entirely.
-    const { accessToken: token } = usePatientStore.getState();
-    if (!token) loadPatient(nupi);
-  }, [nupi]);
-
-  // ── Loading ───────────────────────────────────────────────────
-  if (isLoadingPatient) return (
+  // Loading state
+  if (isLoadingPatient && !currentPatient) return (
     <div className="flex items-center justify-center h-64">
       <Loader2 size={28} className="animate-spin text-teal-500" />
     </div>
   );
 
-  // ── No patient ────────────────────────────────────────────────
+  // No patient state
   if (!currentPatient) return (
     <div className="flex flex-col items-center justify-center h-64 gap-3 text-slate-400">
       <UserCircle size={48} className="opacity-30" />
-      <p className="text-sm">Patient not found or access token expired.</p>
+      <p className="text-sm">Patient not found.</p>
       <Button variant="link" onClick={() => navigate('/patients')}>Go back</Button>
     </div>
   );
@@ -175,22 +217,15 @@ export const PatientDetail = () => {
     ? `${p.firstName} ${p.middleName ?? ''} ${p.lastName}`.trim()
     : p.name || p.nupi;
 
-  const dob      = p.dateOfBirth ? new Date(p.dateOfBirth) : null;
+  const dob = p.dateOfBirth ? new Date(p.dateOfBirth) : null;
   const dobValid = dob && dob.getFullYear() > 1900;
-  const age      = dobValid ? Math.floor((Date.now() - dob!.getTime()) / 3.156e10) : null;
+  const age = dobValid ? Math.floor((Date.now() - dob!.getTime()) / 3.156e10) : null;
   const isActive = p.active !== false;
-
-  // Ghost record = federated patient with no demographics loaded yet.
-  // Based purely on store data — NOT on local UI state like verifyStep,
-  // because verification happens in VerifyPanel (a separate component).
-  // Clears automatically once setPatientDemographics() populates the store.
-  const isGhostRecord =
-    p.isFederatedRecord && !dobValid && !p.phoneNumber && !p.nationalId;
 
   return (
     <div className="space-y-6 max-w-5xl">
 
-      {/* ── Header ─────────────────────────────────────────────── */}
+      {/* Header */}
       <div className="flex items-start gap-4">
         <button
           onClick={() => navigate('/patients')}
@@ -203,6 +238,7 @@ export const PatientDetail = () => {
             <h1 className="text-2xl font-bold text-slate-800">{fullName}</h1>
             {p.gender && badge(p.gender, 'bg-blue-50 text-blue-700')}
             {p.isFederatedRecord && badge('Federated', 'bg-violet-50 text-violet-700')}
+            {!p.isFederatedRecord && badge('Local', 'bg-teal-50 text-teal-700')}
             {badge(
               isActive ? 'Active' : 'Inactive',
               isActive ? 'bg-teal-50 text-teal-700' : 'bg-red-50 text-red-700'
@@ -211,25 +247,28 @@ export const PatientDetail = () => {
           <p className="text-xs text-slate-400 mt-1 font-mono">{p.nupi}</p>
         </div>
 
-        <Button
-          className="bg-teal-600 hover:bg-teal-700 text-white gap-2 shrink-0"
-          onClick={() => {
-            if (p.isFederatedRecord && !accessToken) {
+        {/* FIX: Only show verify button for ghost records */}
+        {isGhostRecord ? (
+          <Button
+            className="bg-amber-500 hover:bg-amber-600 text-white gap-2 shrink-0"
+            onClick={() => {
               setVerifyStep('idle');
               document.getElementById('verify-section')?.scrollIntoView({ behavior: 'smooth' });
-            } else {
-              navigate(`/patients/${nupi}/encounter`);
-            }
-          }}>
-          {p.isFederatedRecord && !accessToken
-            ? <><Lock size={14} /> Verify to Create Encounter</>
-            : <><PlusCircle size={15} /> Create Encounter</>}
-        </Button>
+            }}>
+            <Lock size={14} /> Verify Identity
+          </Button>
+        ) : (
+          <Button
+            className="bg-teal-600 hover:bg-teal-700 text-white gap-2 shrink-0"
+            onClick={() => navigate(`/patients/${nupi}/encounter`)}>
+            <PlusCircle size={15} /> Create Encounter
+          </Button>
+        )}
       </div>
 
       <div className="grid md:grid-cols-3 gap-4">
 
-        {/* ── Demographics ─────────────────────────────────────── */}
+        {/* Demographics */}
         <div className="md:col-span-1 space-y-4">
           <div className="bg-white rounded-xl border border-slate-200 p-5 shadow-sm space-y-3">
             <h2 className="text-xs font-semibold text-slate-500 uppercase tracking-wide">
@@ -237,7 +276,6 @@ export const PatientDetail = () => {
             </h2>
 
             {isGhostRecord ? (
-              // ✅ Only show this banner while unverified AND demographics are truly absent
               <div className="bg-amber-50 border border-amber-100 rounded-lg px-3 py-2.5 text-xs text-amber-700 space-y-1">
                 <p className="font-medium">Demographics unavailable</p>
                 <p className="text-amber-600 leading-relaxed">
@@ -247,8 +285,8 @@ export const PatientDetail = () => {
               </div>
             ) : (
               <div className="space-y-2 text-sm">
-                <Row label="Age"         value={age !== null ? `${age} years` : '—'} />
-                <Row label="DOB"         value={dobValid ? dob!.toLocaleDateString('en-KE') : '—'} />
+                <Row label="Age" value={age !== null ? `${age} years` : '—'} />
+                <Row label="DOB" value={dobValid ? dob!.toLocaleDateString('en-KE') : '—'} />
                 <Row label="National ID" value={p.nationalId || '—'} />
                 <Row label="Blood Group" value={p.bloodGroup || '—'} />
               </div>
@@ -281,8 +319,8 @@ export const PatientDetail = () => {
             </div>
           </div>
 
-          {/* Facilities visited */}
-          {facilitiesVisited.length > 0 && (
+          {/* Facilities visited - only show for federated patients */}
+          {facilitiesVisited.length > 0 && p.isFederatedRecord && (
             <div className="bg-white rounded-xl border border-slate-200 p-5 shadow-sm space-y-3">
               <h2 className="text-xs font-semibold text-slate-500 uppercase tracking-wide flex items-center gap-2">
                 <Building2 size={13} /> Facilities Visited
@@ -300,8 +338,8 @@ export const PatientDetail = () => {
           )}
         </div>
 
-        {/* ── Verify identity (federated + not yet verified) ────── */}
-        {p.isFederatedRecord && !accessToken && !isGhostRecord === false && isGhostRecord && (
+        {/* Verify identity section - ONLY show for ghost records */}
+        {isGhostRecord && (
           <div id="verify-section" className="md:col-span-2">
             <div className="bg-white rounded-xl border border-amber-200 p-5 shadow-sm space-y-4">
               <div className="flex items-center gap-2">
@@ -317,16 +355,26 @@ export const PatientDetail = () => {
                   <div className="grid grid-cols-2 gap-3">
                     <div className="space-y-1">
                       <label className="text-xs font-medium text-slate-600">National ID</label>
-                      <Input placeholder="National ID" value={verifyNationalId} onChange={e => setVerifyNationalId(e.target.value)} />
+                      <Input 
+                        placeholder="National ID" 
+                        value={verifyNationalId} 
+                        onChange={e => setVerifyNationalId(e.target.value)} 
+                      />
                     </div>
                     <div className="space-y-1">
                       <label className="text-xs font-medium text-slate-600">Date of Birth</label>
-                      <Input type="date" value={verifyDob} onChange={e => setVerifyDob(e.target.value)} />
+                      <Input 
+                        type="date" 
+                        value={verifyDob} 
+                        onChange={e => setVerifyDob(e.target.value)} 
+                      />
                     </div>
                   </div>
-                  <Button className="bg-amber-500 hover:bg-amber-600 text-white w-full"
-                    onClick={handleGetQuestion} disabled={verifyLoading || !verifyNationalId || !verifyDob}>
-                    {verifyLoading ? <Loader2 size={14} className="animate-spin mr-2" /> : null}
+                  <Button 
+                    className="bg-amber-500 hover:bg-amber-600 text-white w-full"
+                    onClick={handleGetQuestion} 
+                    disabled={verifyLoading || !verifyNationalId || !verifyDob}>
+                    {verifyLoading && <Loader2 size={14} className="animate-spin mr-2" />}
                     Get Security Question
                   </Button>
                 </div>
@@ -338,17 +386,32 @@ export const PatientDetail = () => {
                     <p className="text-xs font-medium text-amber-600 mb-1">Security Question</p>
                     <p className="text-sm text-slate-800">{question}</p>
                   </div>
-                  <Input placeholder="Answer" value={answer} onChange={e => setAnswer(e.target.value)}
-                    onKeyDown={e => e.key === 'Enter' && !verifyLoading && answer && handleVerify()} />
+                  <Input 
+                    placeholder="Answer" 
+                    value={answer} 
+                    onChange={e => setAnswer(e.target.value)}
+                    onKeyDown={e => e.key === 'Enter' && !verifyLoading && answer && handleVerify()} 
+                  />
                   <div className="flex gap-2">
                     <Button variant="outline" className="flex-1"
-                      onClick={() => { setVerifyStep('idle'); setVerifyError(''); }}>Back</Button>
+                      onClick={() => { setVerifyStep('idle'); setVerifyError(''); }}>
+                      Back
+                    </Button>
                     <Button className="flex-1 bg-amber-500 hover:bg-amber-600 text-white"
                       onClick={handleVerify} disabled={verifyLoading || !answer}>
-                      {verifyLoading ? <Loader2 size={14} className="animate-spin mr-2" /> : null}
+                      {verifyLoading && <Loader2 size={14} className="animate-spin mr-2" />}
                       Confirm Identity
                     </Button>
                   </div>
+                </div>
+              )}
+
+              {verifyStep === 'done' && (
+                <div className="bg-teal-50 border border-teal-100 rounded-lg px-4 py-3">
+                  <p className="text-sm text-teal-700 flex items-center gap-2">
+                    <ShieldCheck size={16} />
+                    ✓ Identity verified! Demographics loaded successfully.
+                  </p>
                 </div>
               )}
 
@@ -361,8 +424,8 @@ export const PatientDetail = () => {
           </div>
         )}
 
-        {/* ── Encounters ───────────────────────────────────────── */}
-        <div className={p.isFederatedRecord && !accessToken && !isGhostRecord === false && isGhostRecord ? 'md:col-span-3' : 'md:col-span-2'}>
+        {/* Encounters */}
+        <div className={isGhostRecord ? 'md:col-span-3' : 'md:col-span-2'}>
           <div className="bg-white rounded-xl border border-slate-200 shadow-sm">
             <div className="px-5 py-4 border-b border-slate-100 flex items-center justify-between">
               <h2 className="font-semibold text-slate-700 text-sm flex items-center gap-2">

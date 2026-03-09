@@ -2,9 +2,7 @@ import axios from 'axios';
 import { useAuthStore } from '../stores/auth.store';
 
 // ── Base client ───────────────────────────────────────────────────
-// Base URL comes from .env — VITE_API_URL for Vite projects
-// or NEXT_PUBLIC_API_URL for Next.js
-
+// This points to YOUR backend API (not the gateway directly)
 const BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:3000';
 
 export const apiClient = axios.create({
@@ -19,17 +17,35 @@ apiClient.interceptors.request.use((config) => {
     if (token) {
         config.headers.Authorization = `Bearer ${token}`;
     }
+    
+    // Debug logging in development
+    if (import.meta.env.DEV) {
+        console.log(`🚀 ${config.method?.toUpperCase()} ${config.baseURL}${config.url}`, {
+            params: config.params,
+            headers: config.headers,
+        });
+    }
+    
     return config;
 });
 
 // ── Response interceptor — auto logout on 401 ─────────────────────
 apiClient.interceptors.response.use(
-    (res) => res,
+    (res) => {
+        if (import.meta.env.DEV) {
+            console.log(`✅ ${res.status} ${res.config.url}`, res.data);
+        }
+        return res;
+    },
     (err) => {
+        if (import.meta.env.DEV) {
+            console.error(`❌ ${err.response?.status} ${err.config?.url}`, err.response?.data);
+        }
+        
         if (err.response?.status === 401) {
             const url = err.config?.url || '';
             
-            // Only logout if it's a staff auth failure, not a patient verification failure
+            // Only logout if it's a staff auth failure
             const isPatientVerify = url.includes('/verify/') || url.includes('/patients/verify');
             
             if (!isPatientVerify) {
@@ -46,7 +62,6 @@ apiClient.interceptors.response.use(
 export const authApi = {
     login: async (email: string, password: string) => {
         const res = await apiClient.post('/auth/login', { email, password });
-        // Response shape: { success, data: { token, user } }
         return res.data.data as { token: string; user: any };
     },
 
