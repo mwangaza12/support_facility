@@ -260,4 +260,41 @@ router.get('/Encounter', requireGateway, async (req: Request, res: Response) => 
   }
 });
 
+// ── GET /fhir/Encounter/:id ───────────────────────────────────────
+// Single encounter by ID — called by the HIE Gateway Encounter/:id proxy.
+
+router.get('/Encounter/:id', requireGateway, async (req: Request, res: Response) => {
+  try {
+    const id = String(req.params.id);
+
+    const rows = await db
+      .select()
+      .from(encounters)
+      .where(eq(encounters.id, id))
+      .limit(1);
+
+    const encounter = rows[0];
+
+    if (!encounter) {
+      return res.status(404)
+        .set('Content-Type', 'application/fhir+json')
+        .json({
+          resourceType: 'OperationOutcome',
+          issue: [{ severity: 'error', code: 'not-found', diagnostics: `Encounter ${id} not found` }],
+        });
+    }
+
+    res.set('Content-Type', 'application/fhir+json');
+    res.json(toFhirEncounter(encounter));
+  } catch (err: any) {
+    res.status(500)
+      .set('Content-Type', 'application/fhir+json')
+      .json({
+        resourceType: 'OperationOutcome',
+        issue: [{ severity: 'error', code: 'exception', diagnostics: err.message }],
+      });
+  }
+});
+
+
 export default router;
