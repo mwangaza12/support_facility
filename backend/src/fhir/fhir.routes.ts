@@ -76,7 +76,7 @@ function toFhirEncounter(e: any): object {
     try { return JSON.parse(val); } catch { return null; }
   };
 
-  const vitals      = parseJson(e.vitals);
+  const vitals      = parseJson(e.vitalSigns ?? e.vital_signs ?? e.vitals);
   const diagnoses   = parseJson(e.diagnoses)   as any[] | null;
   const medications = parseJson(e.medications) as any[] | null;
 
